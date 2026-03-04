@@ -51,8 +51,19 @@ function getCrypto(): Crypto {
 }
 
 function base64UrlEncode(bytes: ArrayBuffer): string {
-  const binary = String.fromCharCode(...new Uint8Array(bytes));
-  const base64 = btoa(binary);
+  let base64: string;
+
+  if (typeof btoa === "function") {
+    const binary = String.fromCharCode(...new Uint8Array(bytes));
+    base64 = btoa(binary);
+  } else if (typeof Buffer !== "undefined") {
+    // Node.js / environments with Buffer available
+    // eslint-disable-next-line no-undef
+    base64 = Buffer.from(bytes).toString("base64");
+  } else {
+    throw new Error("No base64 encoder available for PKCE code challenge.");
+  }
+
   return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
