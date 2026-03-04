@@ -56,12 +56,23 @@ function base64UrlEncode(bytes: ArrayBuffer): string {
   if (typeof btoa === "function") {
     const binary = String.fromCharCode(...new Uint8Array(bytes));
     base64 = btoa(binary);
-  } else if (typeof Buffer !== "undefined") {
-    // Node.js / environments with Buffer available
-    // eslint-disable-next-line no-undef
-    base64 = Buffer.from(bytes).toString("base64");
   } else {
-    throw new Error("No base64 encoder available for PKCE code challenge.");
+    // Node.js / non-DOM environments: fall back to Uint8Array → base64 via TextEncoder-ish logic
+    const binary = String.fromCharCode(...new Uint8Array(bytes));
+    // This uses a minimal, inline base64 encoder to avoid depending on Node types.
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let output = "";
+    for (let i = 0; i < binary.length; i += 3) {
+      const c1 = binary.charCodeAt(i);
+      const c2 = binary.charCodeAt(i + 1) || 0;
+      const c3 = binary.charCodeAt(i + 2) || 0;
+      const e1 = c1 >> 2;
+      const e2 = ((c1 & 3) << 4) | (c2 >> 4);
+      const e3 = ((c2 & 15) << 2) | (c3 >> 6);
+      const e4 = c3 & 63;
+      output += chars[e1] + chars[e2] + (i + 1 < binary.length ? chars[e3] : "=") + (i + 2 < binary.length ? chars[e4] : "=");
+    }
+    base64 = output;
   }
 
   return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -198,4 +209,51 @@ export async function exchangeCodeForToken({
 
   return (await response.json()) as TokenResponse;
 }
+
+// --- Refresh token exchange ---
+
+export interface RefreshTokenParams {
+  config: OAuth2ClientConfig;
+  refreshToken: string;
+  clientSecret?: string; // only for confidential clients
+  extraParams?: Record<string, string>;
+}
+
+export async function refreshAccessToken({
+  config,
+  refreshToken,
+  clientSecret,
+  extraParams = {},
+}: RefreshTokenParams): Promise<TokenResponse> {
+  const body = new URLSearchParams();
+  body.set("grant_type", "refresh_token");
+  body.set("refresh_token", refreshToken);
+  body.set("client_id", config.clientId);
+
+  if (clientSecret) {
+    body.set("client_secret", clientSecret);
+  }
+
+  for (const [key, value] of Object.entries(extraParams)) {
+    body.set(key, value);
+  }
+
+  const tokenEndpoint = config.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT;
+
+  const response = await fetch(tokenEndpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Token endpoint returned ${response.status}: ${text}`);
+  }
+
+  return (await response.json()) as TokenResponse;
+}
+
 

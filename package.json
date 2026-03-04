@@ -15,7 +15,7 @@
   "author": "AlfaDocs",
   "license": "MIT",
   "devDependencies": {
+    "@types/node": "^25.3.3",
     "typescript": "^5.6.3"
   }
 }
-
