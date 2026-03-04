@@ -42,10 +42,13 @@ export const DEFAULT_TOKEN_ENDPOINT = "https://app.alfadocs.com/oauth2/token";
 // --- PKCE helpers (browser) ---
 
 function getCrypto(): Crypto {
-  if (typeof window !== "undefined" && window.crypto) {
-    return window.crypto;
+  // Works in both browser and Node 18+ (Web Crypto on globalThis)
+  if (typeof globalThis !== "undefined" && (globalThis as any).crypto) {
+    return (globalThis as any).crypto as Crypto;
   }
-  throw new Error("window.crypto is not available; PKCE helpers require a browser or a crypto polyfill");
+  throw new Error(
+    "globalThis.crypto is not available; PKCE helpers require a browser or a crypto polyfill",
+  );
 }
 
 function base64UrlEncode(bytes: ArrayBuffer): string {
