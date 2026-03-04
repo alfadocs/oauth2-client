@@ -268,3 +268,48 @@ export async function refreshAccessToken(params: RefreshTokenParams): Promise<To
 
   return postToTokenEndpoint(config, body);
 }
+
+// ---------------------------------------------------------------------------
+// Token expiry check
+// ---------------------------------------------------------------------------
+
+/** Token response with at least `expires_in` (seconds until access token expiry). */
+export interface TokenResponseWithExpiry {
+  expires_in?: number;
+}
+
+/** Options for {@link isTokenExpiredOrExpiringSoon}. */
+export interface TokenExpiryCheckOptions {
+  /** Timestamp in ms when the access token was issued. Default 0 if omitted. */
+  obtainedAt?: number;
+  /** Treat token as expiring if it expires within this many seconds. Default 10. */
+  bufferSeconds?: number;
+}
+
+const DEFAULT_BUFFER_SECONDS = 10;
+
+/**
+ * Returns whether the access token is expired or will expire within a buffer window.
+ * Use this before using the access token; if it returns true and you have a refresh_token,
+ * call {@link refreshAccessToken}, then store the new token response and a new obtainedAt (e.g. Date.now()).
+ *
+ * @param tokenResponse - Object with at least `expires_in` (seconds until expiry). If missing, returns false (no expiry assumed).
+ * @param options - Optional `obtainedAt` (ms when token was issued; default 0) and `bufferSeconds` (default 10).
+ * @returns True if the token is expired or expires within `bufferSeconds` (refresh recommended).
+ */
+export function isTokenExpiredOrExpiringSoon(
+  tokenResponse: TokenResponseWithExpiry,
+  options?: TokenExpiryCheckOptions,
+): boolean {
+  const expiresIn = tokenResponse.expires_in;
+  if (expiresIn == null || typeof expiresIn !== "number") {
+    return false;
+  }
+
+  const obtainedAt = options?.obtainedAt ?? 0;
+  const bufferSeconds = options?.bufferSeconds ?? DEFAULT_BUFFER_SECONDS;
+  const expiryTimeMs = obtainedAt + expiresIn * 1000;
+  const thresholdMs = expiryTimeMs - bufferSeconds * 1000;
+
+  return Date.now() >= thresholdMs;
+}

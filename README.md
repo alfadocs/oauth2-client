@@ -122,3 +122,34 @@ async function refreshTokens(refreshToken: string) {
 }
 ```
 
+## Token expiry and refresh
+
+Before using the access token, call `isTokenExpiredOrExpiringSoon(tokenResponse, { obtainedAt, bufferSeconds })` to decide if you should refresh.
+
+- **If it returns `true`** and you have a `refresh_token`, call `refreshAccessToken(...)`, then replace the stored token response and store a new `obtainedAt` (e.g. `Date.now()`). Your app is responsible for storage; the library only provides the predicate and `refreshAccessToken`.
+- **Options:**
+  - `obtainedAt`: timestamp in ms when the access token was issued (default `0` if omitted).
+  - `bufferSeconds`: treat the token as expiring if it expires within this many seconds (default `10`).
+
+Example:
+
+```ts
+import {
+  isTokenExpiredOrExpiringSoon,
+  refreshAccessToken,
+  type TokenExpiryCheckOptions,
+} from '@alfadocs/oauth2-client';
+
+// When about to use the token (e.g. before an API call):
+const options: TokenExpiryCheckOptions = {
+  obtainedAt: storedObtainedAt, // ms when you received the token
+  bufferSeconds: 10,
+};
+if (isTokenExpiredOrExpiringSoon(storedTokenResponse, options) && storedTokenResponse.refresh_token) {
+  const refreshed = await refreshAccessToken({ config, refreshToken: storedTokenResponse.refresh_token, clientSecret });
+  storedTokenResponse = refreshed;
+  storedObtainedAt = Date.now();
+}
+// Use storedTokenResponse.access_token
+```
+
