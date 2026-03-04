@@ -40,7 +40,6 @@ export const DEFAULT_AUTHORIZE_ENDPOINT = "https://app.alfadocs.com/oauth2/autho
 export const DEFAULT_TOKEN_ENDPOINT = "https://app.alfadocs.com/oauth2/token";
 
 // --- PKCE helpers (browser) ---
-
 function getCrypto(): Crypto {
   // Works in both browser and Node 18+ (Web Crypto on globalThis)
   if (typeof globalThis !== "undefined" && (globalThis as any).crypto) {
@@ -171,7 +170,6 @@ export async function exchangeCodeForToken({
     body.set(key, value);
   }
 
-  const response = await fetch(config.tokenEndpoint, {
   const tokenEndpoint = config.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT;
 
   const response = await fetch(tokenEndpoint, {

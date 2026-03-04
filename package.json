@@ -2,8 +2,7 @@
   "name": "@alfadocs/oauth2-client",
   "version": "0.1.0",
   "description": "Minimal OAuth2 Authorization Code + PKCE client for the AlfaDocs OAuth2 server.",
-  "main": "dist/index.cjs",
-  "module": "dist/index.mjs",
+  "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc"
