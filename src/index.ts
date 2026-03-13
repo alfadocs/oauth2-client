@@ -1,315 +1,284 @@
 /**
- * Client configuration for the AlfaDocs OAuth2 server.
+ * @alfadocs/oauth2-client
+ *
+ * Drop-in OAuth2 PKCE client for Alfadocs authentication.
+ * Designed for Lovable apps using Supabase as the backend.
+ *
+ * How it works:
+ *   1. `login()`            — generates PKCE, redirects user to Alfadocs
+ *   2. `handleCallback()`   — sends the auth code to your Supabase Edge Function,
+ *                             which exchanges it server-side and sets an httpOnly cookie
+ *   3. `refreshSession()`   — call on app mount to restore session from the cookie
+ *   4. `isAuthenticated()`  — sync check of in-memory state
+ *   5. `logout()`           — clears the cookie via Supabase
+ *
+ * The browser never sees the access token. All token handling happens server-side
+ * in the Supabase Edge Function. The session is persisted as an httpOnly cookie,
+ * which survives page refreshes and is inaccessible to JavaScript.
+ *
+ * See README for the required Supabase Edge Function template.
  */
-export interface OAuth2ClientConfig {
-  /** Override for the authorization URL. Defaults to production AlfaDocs. */
-  authorizeEndpoint?: string;
-  /** Override for the token URL. Defaults to production AlfaDocs. */
-  tokenEndpoint?: string;
+
+// ─── Public types ─────────────────────────────────────────────────────────────
+
+/**
+ * Configuration for `initAlfadocsAuth`.
+ *
+ * ```ts
+ * const auth = initAlfadocsAuth({
+ *   clientId:    import.meta.env.VITE_ALFADOCS_CLIENT_ID,
+ *   redirectUri: `${window.location.origin}/callback`,
+ *   exchangeUrl: import.meta.env.VITE_SUPABASE_EXCHANGE_URL,
+ *   baseUrl:     'https://app.alfadocs.com',
+ * })
+ * ```
+ */
+export interface AlfadocsAuthConfig {
+  /** Your Alfadocs OAuth2 client ID. */
   clientId: string;
+
+  /**
+   * The URL Alfadocs will redirect back to after authentication.
+   * Must exactly match a redirect URI registered on your Alfadocs client.
+   */
   redirectUri: string;
-  /** Scopes to request, e.g. `["patient:view"]`. */
+
+  /**
+   * URL of your Supabase Edge Function that handles token exchange and session management.
+   * e.g. `https://xyz.supabase.co/functions/v1/alfadocs-auth`
+   *
+   * The function must implement:
+   * - `POST /`        — exchange code, set httpOnly cookie
+   * - `GET /session`  — validate cookie, return `{ authenticated: boolean }`
+   * - `POST /logout`  — clear cookie
+   *
+   * See README for the full Edge Function template.
+   */
+  exchangeUrl: string;
+
+  /**
+   * Alfadocs base URL. Defaults to the local development server (`https://app.alfadocs.loc`).
+   * Set explicitly for production: `https://app.alfadocs.com`.
+   */
+  baseUrl?: string;
+
+  /** OAuth2 scopes to request (e.g. `["patient:view"]`). Defaults to `[]`. */
   scopes?: string[];
 }
 
-/** PKCE code verifier and S256 code challenge pair. */
-export interface PkcePair {
-  codeVerifier: string;
-  codeChallenge: string;
+/** The auth client returned by `initAlfadocsAuth`. */
+export interface AlfadocsAuth {
+  /**
+   * Redirects the user to the Alfadocs login page.
+   * Automatically generates and stores PKCE + state.
+   *
+   * Call this when the user clicks your "Login" button.
+   */
+  login(): Promise<void>;
+
+  /**
+   * Handles the OAuth2 callback after Alfadocs redirects the user back.
+   * Call this on the page whose URL matches your `redirectUri`.
+   *
+   * Sends the authorization code to your Supabase Edge Function, which
+   * exchanges it for tokens server-side and sets an httpOnly session cookie.
+   *
+   * @param url Full callback URL. Defaults to `window.location.href`.
+   */
+  handleCallback(url?: string): Promise<void>;
+
+  /**
+   * Checks whether the session cookie is still valid by calling your Supabase
+   * Edge Function. Call this once on app mount to restore auth state after a
+   * page refresh.
+   *
+   * Returns `true` if the user is authenticated, `false` otherwise.
+   *
+   * ```ts
+   * useEffect(() => {
+   *   auth.refreshSession().then(setIsLoggedIn)
+   * }, [])
+   * ```
+   */
+  refreshSession(): Promise<boolean>;
+
+  /**
+   * Synchronous check of the in-memory auth state.
+   * Always returns `false` after a page refresh until `refreshSession()` completes.
+   * Use `refreshSession()` for the authoritative check.
+   */
+  isAuthenticated(): boolean;
+
+  /**
+   * Clears the session by calling your Supabase Edge Function, which removes
+   * the httpOnly cookie.
+   */
+  logout(): Promise<void>;
 }
 
-/** Optional parameters when building the authorization URL. */
-export interface AuthorizeUrlParams {
-  state?: string;
-  pkce?: PkcePair;
-  extraParams?: Record<string, string>;
-}
+// ─── PKCE / state keys (sessionStorage — ephemeral, redirect-safe) ────────────
+// These two values must survive the browser navigation to Alfadocs and back.
+// sessionStorage persists across same-tab navigations but is cleared on tab close.
+// They are single-use and hold no long-term secret value.
 
-/** Response from the token endpoint (access token, optional refresh token, etc.). */
-export interface TokenResponse {
-  access_token: string;
-  token_type: string;
-  expires_in?: number;
-  refresh_token?: string;
-  scope?: string;
-  [key: string]: unknown;
-}
+const KEY_PKCE_VERIFIER = "alfadocs_auth_pkce";
+const KEY_STATE = "alfadocs_auth_state";
+// Tracks the last successfully exchanged code to handle React StrictMode
+// double-invocation of handleCallback (auth codes are single-use).
+const KEY_LAST_CODE = "alfadocs_auth_last_code";
 
-/** Default AlfaDocs OAuth2 URLs (production). */
-export const DEFAULT_AUTHORIZE_ENDPOINT = "https://app.alfadocs.com/oauth2/authorize";
-export const DEFAULT_TOKEN_ENDPOINT = "https://app.alfadocs.com/oauth2/token";
+// ─── Crypto helpers ───────────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// PKCE helpers (use in browser or Node 18+)
-// ---------------------------------------------------------------------------
-
-/**
- * Returns the global Web Crypto implementation.
- * Works in browsers and Node 18+.
- */
-function getCrypto(): Crypto {
-  if (typeof globalThis !== "undefined" && (globalThis as { crypto?: Crypto }).crypto) {
-    return (globalThis as { crypto: Crypto }).crypto;
+function base64UrlEncode(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
   }
-  throw new Error(
-    "Web Crypto is not available. Use a browser or Node 18+, or provide a polyfill.",
-  );
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/**
- * Encodes bytes to base64. Uses `btoa` when available, otherwise a small inline encoder.
- */
-function toBase64(bytes: ArrayBuffer): string {
-  const binary = String.fromCharCode(...new Uint8Array(bytes));
-  if (typeof btoa === "function") {
-    return btoa(binary);
-  }
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  let out = "";
-  for (let i = 0; i < binary.length; i += 3) {
-    const c1 = binary.charCodeAt(i);
-    const c2 = i + 1 < binary.length ? binary.charCodeAt(i + 1) : 0;
-    const c3 = i + 2 < binary.length ? binary.charCodeAt(i + 2) : 0;
-    out += chars[c1 >> 2]
-         + chars[((c1 & 3) << 4) | (c2 >> 4)]
-         + (i + 1 < binary.length ? chars[((c2 & 15) << 2) | (c3 >> 6)] : "=")
-         + (i + 2 < binary.length ? chars[c3 & 63] : "=");
-  }
-  return out;
+async function generatePkce(): Promise<{ verifier: string; challenge: string }> {
+  const bytes = new Uint8Array(64);
+  crypto.getRandomValues(bytes);
+  const verifier = base64UrlEncode(bytes.buffer);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return { verifier, challenge: base64UrlEncode(digest) };
 }
 
-/**
- * Encodes bytes as base64url (URL-safe, no padding).
- * Used for the PKCE code_challenge.
- */
-function base64UrlEncode(bytes: ArrayBuffer): string {
-  const base64 = toBase64(bytes);
-  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function generateState(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes.buffer);
 }
 
+// ─── Public API ───────────────────────────────────────────────────────────────
+
 /**
- * Creates a PKCE code verifier and S256 code challenge.
- * Call this before redirecting the user to the authorize URL; pass the verifier when exchanging the code.
+ * Initialize Alfadocs authentication.
  *
- * @param length - Length of the random verifier (default 64).
- * @returns `{ codeVerifier, codeChallenge }` to use with `buildAuthorizeUrl` and `exchangeCodeForToken`.
- */
-export async function createPkcePair(length = 64): Promise<PkcePair> {
-  const crypto = getCrypto();
-  const random = new Uint8Array(length);
-  crypto.getRandomValues(random);
-  const codeVerifier = Array.from(random)
-    .map((b) => (b % 36).toString(36))
-    .join("");
-
-  const data = new TextEncoder().encode(codeVerifier);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  const codeChallenge = base64UrlEncode(digest);
-
-  return { codeVerifier, codeChallenge };
-}
-
-// ---------------------------------------------------------------------------
-// Authorization URL
-// ---------------------------------------------------------------------------
-
-/**
- * Builds the authorization URL to send the user to for login.
- * Add optional state and PKCE from `createPkcePair` for security.
+ * @example
+ * ```ts
+ * // src/auth.ts — create once, import everywhere
+ * import { initAlfadocsAuth } from '@alfadocs/oauth2-client'
  *
- * @param config - Client config (clientId, redirectUri, optional endpoints and scopes).
- * @param params - Optional state, PKCE pair, and extra query params.
- * @returns Full URL to redirect the user to.
+ * export const auth = initAlfadocsAuth({
+ *   clientId:    import.meta.env.VITE_ALFADOCS_CLIENT_ID,
+ *   redirectUri: `${window.location.origin}/callback`,
+ *   exchangeUrl: import.meta.env.VITE_SUPABASE_EXCHANGE_URL,
+ *   baseUrl:     'https://app.alfadocs.com',
+ * })
+ * ```
  */
-export function buildAuthorizeUrl(
-  config: OAuth2ClientConfig,
-  params: AuthorizeUrlParams = {},
-): string {
-  const baseUrl = config.authorizeEndpoint ?? DEFAULT_AUTHORIZE_ENDPOINT;
-  const url = new URL(baseUrl);
+export function initAlfadocsAuth(config: AlfadocsAuthConfig): AlfadocsAuth {
+  const baseUrl = (config.baseUrl ?? "https://app.alfadocs.loc").replace(/\/$/, "");
+  const authorizeUrl = `${baseUrl}/oauth2/authorize`;
+  const exchangeUrl = config.exchangeUrl.replace(/\/$/, "");
+  const scopes = config.scopes ?? [];
 
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", config.clientId);
-  url.searchParams.set("redirect_uri", config.redirectUri);
+  // In-memory auth state. Set by handleCallback / refreshSession, cleared by logout.
+  // Lost on page refresh — call refreshSession() on mount to restore it.
+  let authenticated = false;
 
-  if (config.scopes?.length) {
-    url.searchParams.set("scope", config.scopes.join(" "));
-  }
-  if (params.state) {
-    url.searchParams.set("state", params.state);
-  }
-  if (params.pkce) {
-    url.searchParams.set("code_challenge", params.pkce.codeChallenge);
-    url.searchParams.set("code_challenge_method", "S256");
-  }
-  if (params.extraParams) {
-    for (const [key, value] of Object.entries(params.extraParams)) {
-      url.searchParams.set(key, value);
-    }
-  }
-
-  return url.toString();
-}
-
-// ---------------------------------------------------------------------------
-// Callback parsing
-// ---------------------------------------------------------------------------
-
-/** Query parameters parsed from the OAuth2 redirect callback URL. */
-export interface ParsedCallback {
-  code?: string;
-  state?: string;
-  error?: string;
-  error_description?: string;
-}
-
-/**
- * Parses the redirect URL after the user returns from the authorization server.
- * Use this to read `code`, `state`, or `error` / `error_description`.
- *
- * @param urlLike - Full callback URL (e.g. `window.location.href` or the request URL on the server).
- * @returns Object with `code`, `state`, and optionally `error` / `error_description`.
- */
-export function parseCallback(urlLike: string): ParsedCallback {
-  const url = new URL(urlLike, "http://dummy");
-  const p = url.searchParams;
   return {
-    code: p.get("code") ?? undefined,
-    state: p.get("state") ?? undefined,
-    error: p.get("error") ?? undefined,
-    error_description: p.get("error_description") ?? undefined,
+    async login(): Promise<void> {
+      const state = generateState();
+      const { verifier, challenge } = await generatePkce();
+
+      sessionStorage.setItem(KEY_STATE, state);
+      sessionStorage.setItem(KEY_PKCE_VERIFIER, verifier);
+
+      const params = new URLSearchParams({
+        response_type: "code",
+        client_id: config.clientId,
+        redirect_uri: config.redirectUri,
+        state,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+
+      if (scopes.length > 0) {
+        params.set("scope", scopes.join(" "));
+      }
+
+      window.location.href = `${authorizeUrl}?${params}`;
+    },
+
+    async handleCallback(url?: string): Promise<void> {
+      const searchParams = new URL(url ?? window.location.href).searchParams;
+
+      const error = searchParams.get("error");
+      if (error) {
+        throw new Error(
+          `[AlfadocsAuth] Login failed: ${searchParams.get("error_description") ?? error}`,
+        );
+      }
+
+      const code = searchParams.get("code");
+      if (!code) {
+        // No code in URL. If we're already authenticated (e.g. user navigated
+        // directly to the callback page after a prior login), silently succeed.
+        if (authenticated) return;
+        throw new Error("[AlfadocsAuth] No authorization code found in callback URL.");
+      }
+
+      // React StrictMode calls useEffect twice in dev. Auth codes are single-use,
+      // so skip the exchange if we already successfully processed this exact code.
+      if (sessionStorage.getItem(KEY_LAST_CODE) === code) return;
+
+      const storedState = sessionStorage.getItem(KEY_STATE);
+      const codeVerifier = sessionStorage.getItem(KEY_PKCE_VERIFIER) ?? undefined;
+      sessionStorage.removeItem(KEY_STATE);
+      sessionStorage.removeItem(KEY_PKCE_VERIFIER);
+
+      if (storedState && searchParams.get("state") !== storedState) {
+        throw new Error("[AlfadocsAuth] State mismatch — this callback may have been tampered with.");
+      }
+
+      const response = await fetch(exchangeUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include", // required: allows the Supabase function to set the cookie
+        body: JSON.stringify({ code, code_verifier: codeVerifier }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(`[AlfadocsAuth] Session exchange failed (HTTP ${response.status}): ${body}`);
+      }
+
+      sessionStorage.setItem(KEY_LAST_CODE, code);
+      authenticated = true;
+    },
+
+    async refreshSession(): Promise<boolean> {
+      const response = await fetch(`${exchangeUrl}/session`, {
+        method: "GET",
+        credentials: "include", // sends the httpOnly cookie to the Supabase function
+      });
+
+      if (!response.ok) {
+        authenticated = false;
+        return false;
+      }
+
+      const data = await response.json() as { authenticated: boolean };
+      authenticated = data.authenticated ?? false;
+      return authenticated;
+    },
+
+    isAuthenticated(): boolean {
+      return authenticated;
+    },
+
+    async logout(): Promise<void> {
+      await fetch(`${exchangeUrl}/logout`, {
+        method: "POST",
+        credentials: "include",
+      }).catch(() => {
+        // Ignore network errors on logout — clear local state regardless.
+      });
+      authenticated = false;
+    },
   };
-}
-
-// ---------------------------------------------------------------------------
-// Token endpoint (server-side: code exchange and refresh)
-// ---------------------------------------------------------------------------
-
-/**
- * POSTs form body to the token endpoint and returns the JSON response.
- * Shared by authorization-code and refresh-token flows.
- */
-async function postToTokenEndpoint(
-  config: OAuth2ClientConfig,
-  bodyParams: Record<string, string>,
-): Promise<TokenResponse> {
-  const endpoint = config.tokenEndpoint ?? DEFAULT_TOKEN_ENDPOINT;
-  const body = new URLSearchParams(bodyParams);
-
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Token endpoint returned ${response.status}: ${text}`);
-  }
-
-  return (await response.json()) as TokenResponse;
-}
-
-/** Parameters for exchanging an authorization code for tokens. */
-export interface ExchangeCodeParams {
-  config: OAuth2ClientConfig;
-  code: string;
-  codeVerifier?: string;
-  clientSecret?: string;
-  extraParams?: Record<string, string>;
-}
-
-/**
- * Exchanges an authorization code for access token (and optional refresh token).
- * Call this on your server after the user returns with a `code` in the callback URL.
- *
- * @param params - Config, code, optional PKCE verifier, client secret, and extra form params.
- * @returns Token response including `access_token` and optionally `refresh_token`.
- */
-export async function exchangeCodeForToken(params: ExchangeCodeParams): Promise<TokenResponse> {
-  const { config, code, codeVerifier, clientSecret, extraParams = {} } = params;
-  const body: Record<string, string> = {
-    grant_type: "authorization_code",
-    code,
-    redirect_uri: config.redirectUri,
-    client_id: config.clientId,
-    ...extraParams,
-  };
-  if (codeVerifier) body.code_verifier = codeVerifier;
-  if (clientSecret) body.client_secret = clientSecret;
-
-  return postToTokenEndpoint(config, body);
-}
-
-/** Parameters for refreshing an access token. */
-export interface RefreshTokenParams {
-  config: OAuth2ClientConfig;
-  refreshToken: string;
-  clientSecret?: string;
-  extraParams?: Record<string, string>;
-}
-
-/**
- * Exchanges a refresh token for a new access token (and optionally a new refresh token).
- * Call this on your server when the access token expires.
- *
- * @param params - Config, refresh token, optional client secret, and extra form params.
- * @returns New token response.
- */
-export async function refreshAccessToken(params: RefreshTokenParams): Promise<TokenResponse> {
-  const { config, refreshToken, clientSecret, extraParams = {} } = params;
-  const body: Record<string, string> = {
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-    client_id: config.clientId,
-    ...extraParams,
-  };
-  if (clientSecret) body.client_secret = clientSecret;
-
-  return postToTokenEndpoint(config, body);
-}
-
-// ---------------------------------------------------------------------------
-// Token expiry check
-// ---------------------------------------------------------------------------
-
-/** Token response with at least `expires_in` (seconds until access token expiry). */
-export interface TokenResponseWithExpiry {
-  expires_in?: number;
-}
-
-/** Options for {@link isTokenExpiredOrExpiringSoon}. */
-export interface TokenExpiryCheckOptions {
-  /** Timestamp in ms when the access token was issued. Default 0 if omitted. */
-  obtainedAt?: number;
-  /** Treat token as expiring if it expires within this many seconds. Default 10. */
-  bufferSeconds?: number;
-}
-
-const DEFAULT_BUFFER_SECONDS = 10;
-
-/**
- * Returns whether the access token is expired or will expire within a buffer window.
- * Use this before using the access token; if it returns true and you have a refresh_token,
- * call {@link refreshAccessToken}, then store the new token response and a new obtainedAt (e.g. Date.now()).
- *
- * @param tokenResponse - Object with at least `expires_in` (seconds until expiry). If missing, returns false (no expiry assumed).
- * @param options - Optional `obtainedAt` (ms when token was issued; default 0) and `bufferSeconds` (default 10).
- * @returns True if the token is expired or expires within `bufferSeconds` (refresh recommended).
- */
-export function isTokenExpiredOrExpiringSoon(
-  tokenResponse: TokenResponseWithExpiry,
-  options?: TokenExpiryCheckOptions,
-): boolean {
-  const expiresIn = tokenResponse.expires_in;
-  if (expiresIn == null || typeof expiresIn !== "number") {
-    return false;
-  }
-
-  const obtainedAt = options?.obtainedAt ?? 0;
-  const bufferSeconds = options?.bufferSeconds ?? DEFAULT_BUFFER_SECONDS;
-  const expiryTimeMs = obtainedAt + expiresIn * 1000;
-  const thresholdMs = expiryTimeMs - bufferSeconds * 1000;
-
-  return Date.now() >= thresholdMs;
 }

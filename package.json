@@ -1,9 +1,19 @@
 {
   "name": "@alfadocs/oauth2-client",
-  "version": "0.1.0",
-  "description": "Minimal OAuth2 Authorization Code + PKCE client for the AlfaDocs OAuth2 server.",
+  "version": "0.2.0",
+  "description": "Drop-in OAuth2 PKCE client for Alfadocs authentication. One function, minimal setup.",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build"

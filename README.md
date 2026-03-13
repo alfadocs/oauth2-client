@@ -1,11 +1,27 @@
 # @alfadocs/oauth2-client
 
-Minimal OAuth2 Authorization Code + PKCE helper for integrating external apps with the AlfaDocs OAuth2 server.
+Drop-in OAuth2 PKCE client for Alfadocs authentication.
+Built for Lovable apps using Supabase — secure by default, session persists across page refreshes.
 
-Supports:
+## How it works
 
-- Browser SPAs (PKCE + redirect handling)
-- Node.js backends (authorization code exchange + refresh token flow)
+```
+Browser                      Supabase Edge Function         Alfadocs
+  │                                  │                          │
+  │── login() ──────────────────────────────────────────────── redirect ──▶
+  │◀─────────────────────────────────────────────── redirect with code ────
+  │                                  │                          │
+  │── handleCallback() ─────────────▶│                          │
+  │                                  │── POST /oauth2/token ───▶│
+  │                                  │◀── access_token ─────────│
+  │                                  │                          │
+  │◀── Set-Cookie: session (httpOnly)─│
+  │                                  │
+  │── refreshSession() ─────────────▶│ (validates cookie)
+  │◀── { authenticated: true } ──────│
+```
+
+The browser **never sees the access token**. It lives only in the Supabase Edge Function and is sent to Alfadocs APIs server-side. The session is stored as an `httpOnly` cookie — invisible to JavaScript, persistent across page refreshes, secure against XSS.
 
 ## Install
 
@@ -13,143 +29,300 @@ Supports:
 npm install @alfadocs/oauth2-client
 # or
 pnpm add @alfadocs/oauth2-client
-# or
-yarn add @alfadocs/oauth2-client
 ```
 
-## Supported environments
+## Setup overview
 
-This library relies on standard web platform APIs: `fetch`, `URL`, `URLSearchParams`, and Web Crypto (`crypto.subtle`).
+Two things to set up:
 
-- **Browser**: modern browsers are supported out of the box.
-- **Node.js 18+**: `fetch`, `URL`, `URLSearchParams`, and `crypto.subtle` are available globally; no polyfills required.
-- **Node.js < 18**:
-  - You must provide a `fetch` polyfill (for example, `node-fetch`).
-  - For `createPkcePair`, you also need a Web Crypto–compatible polyfill, or generate PKCE values yourself.
+1. **Supabase Edge Function** — handles token exchange server-side, sets the cookie
+2. **Browser app** — calls `login()`, `handleCallback()`, `refreshSession()`
 
-**Recommended architecture**
+---
 
-- Frontend (browser): start the authorization flow using PKCE (`createPkcePair`, `buildAuthorizeUrl`, `parseCallback`).
-- Backend (Node.js): perform token exchange and refresh using `exchangeCodeForToken` and `refreshAccessToken`.
+## Step 1 — Supabase Edge Function
 
-## Usage – Browser SPA (PKCE)
+Create `supabase/functions/alfadocs-auth/index.ts` in your project:
 
 ```ts
-import {
-  createPkcePair,
-  buildAuthorizeUrl,
-  parseCallback,
-} from '@alfadocs/oauth2-client';
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 
-const config = {
-  // You can omit these to use production defaults:
-  // authorizeEndpoint: 'https://app.alfadocs.com/oauth2/authorize',
-  // tokenEndpoint: 'https://app.alfadocs.com/oauth2/token',
-  clientId: 'your-client-id',
-  redirectUri: 'https://your-app.example.com/oauth/callback',
-  scopes: ['patient:view'],
-};
+const ALFADOCS_BASE_URL = Deno.env.get("ALFADOCS_BASE_URL") ?? "https://app.alfadocs.com"
+const ALFADOCS_TOKEN_URL = `${ALFADOCS_BASE_URL}/oauth2/token`
+const CLIENT_ID = Deno.env.get("ALFADOCS_CLIENT_ID")!
+const CLIENT_SECRET = Deno.env.get("ALFADOCS_CLIENT_SECRET")!
+const REDIRECT_URI = Deno.env.get("ALFADOCS_REDIRECT_URI")!
+const ALLOWED_ORIGIN = Deno.env.get("ALLOWED_ORIGIN")!  // e.g. https://myapp.lovable.app
+const COOKIE_NAME = "alfadocs_session"
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 7 // 7 days
 
-// 1) On "Login with AlfaDocs" click
-async function startLogin() {
-  const pkce = await createPkcePair();
-  sessionStorage.setItem('pkce_verifier', pkce.codeVerifier);
-
-  const state = crypto.randomUUID();
-  sessionStorage.setItem('oauth_state', state);
-
-  const url = buildAuthorizeUrl(config, { state, pkce });
-  window.location.href = url;
+// IMPORTANT: ALLOWED_ORIGIN must be your exact frontend URL (not *).
+// credentials: "include" requires a specific origin, never a wildcard.
+const corsHeaders = {
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Credentials": "true",
 }
 
-// 2) On /oauth/callback route
-async function handleCallback() {
-  const { code, state, error, error_description } = parseCallback(window.location.href);
-  if (error) throw new Error(error_description || error);
-  if (!code) throw new Error('Missing authorization code');
-
-  const expectedState = sessionStorage.getItem('oauth_state');
-  if (state !== expectedState) throw new Error('Invalid state');
-
-  const codeVerifier = sessionStorage.getItem('pkce_verifier') || undefined;
-
-  // Typically you would POST `code` (and `codeVerifier`) to your backend,
-  // and call `exchangeCodeForToken` there. See the Node.js example below.
+function json(data: unknown, status = 200, extraHeaders: Record<string, string> = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json", ...extraHeaders },
+  })
 }
+
+function cookieHeader(value: string, maxAge: number) {
+  return [
+    `${COOKIE_NAME}=${value}`,
+    "HttpOnly",
+    "Secure",
+    "SameSite=None",   // required for cross-origin (Supabase ↔ Lovable app)
+    "Path=/",
+    `Max-Age=${maxAge}`,
+  ].join("; ")
+}
+
+function getCookie(req: Request): string | null {
+  const header = req.headers.get("cookie") ?? ""
+  const match = header.match(new RegExp(`${COOKIE_NAME}=([^;]+)`))
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+serve(async (req: Request) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders })
+  }
+
+  const path = new URL(req.url).pathname
+
+  // POST / — exchange auth code for tokens, set httpOnly cookie
+  if (req.method === "POST" && !path.endsWith("/session") && !path.endsWith("/logout")) {
+    const { code, code_verifier } = await req.json()
+
+    const params = new URLSearchParams({
+      grant_type: "authorization_code",
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      redirect_uri: REDIRECT_URI,
+      code,
+    })
+    if (code_verifier) params.set("code_verifier", code_verifier)
+
+    const tokenRes = await fetch(ALFADOCS_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    })
+
+    if (!tokenRes.ok) {
+      const detail = await tokenRes.text()
+      return json({ error: "Token exchange failed", detail }, 400)
+    }
+
+    const tokens = await tokenRes.json()
+    const session = encodeURIComponent(JSON.stringify({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token ?? null,
+      expires_at: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+    }))
+
+    return json({ ok: true }, 200, { "Set-Cookie": cookieHeader(session, COOKIE_MAX_AGE) })
+  }
+
+  // GET /session — check if cookie is still valid
+  if (req.method === "GET" && path.endsWith("/session")) {
+    const raw = getCookie(req)
+    if (!raw) return json({ authenticated: false })
+
+    try {
+      const session = JSON.parse(raw)
+      if (Date.now() < session.expires_at) {
+        return json({ authenticated: true })
+      }
+      // Token expired — attempt refresh if refresh_token is available
+      if (session.refresh_token) {
+        const refreshRes = await fetch(ALFADOCS_TOKEN_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            client_id: CLIENT_ID,
+            client_secret: CLIENT_SECRET,
+            refresh_token: session.refresh_token,
+          }).toString(),
+        })
+        if (refreshRes.ok) {
+          const refreshed = await refreshRes.json()
+          const newSession = encodeURIComponent(JSON.stringify({
+            access_token: refreshed.access_token,
+            refresh_token: refreshed.refresh_token ?? session.refresh_token,
+            expires_at: Date.now() + (refreshed.expires_in ?? 3600) * 1000,
+          }))
+          return json({ authenticated: true }, 200, {
+            "Set-Cookie": cookieHeader(newSession, COOKIE_MAX_AGE),
+          })
+        }
+      }
+      return json({ authenticated: false }, 200, {
+        "Set-Cookie": cookieHeader("", 0), // clear expired cookie
+      })
+    } catch {
+      return json({ authenticated: false })
+    }
+  }
+
+  // POST /logout — clear cookie
+  if (req.method === "POST" && path.endsWith("/logout")) {
+    return json({ ok: true }, 200, { "Set-Cookie": cookieHeader("", 0) })
+  }
+
+  return new Response("Not found", { status: 404, headers: corsHeaders })
+})
 ```
 
-## Usage – Node.js backend (authorization code + refresh)
+### Supabase secrets to set
+
+```bash
+supabase secrets set ALFADOCS_CLIENT_ID=your-client-id
+supabase secrets set ALFADOCS_CLIENT_SECRET=your-client-secret
+supabase secrets set ALFADOCS_REDIRECT_URI=https://myapp.lovable.app/callback
+supabase secrets set ALFADOCS_BASE_URL=https://app.alfadocs.com
+supabase secrets set ALLOWED_ORIGIN=https://myapp.lovable.app
+```
+
+Deploy with:
+```bash
+supabase functions deploy alfadocs-auth
+```
+
+---
+
+## Step 2 — Browser app
+
+### Environment variables (`.env`)
+
+```
+VITE_ALFADOCS_CLIENT_ID=your-client-id
+VITE_SUPABASE_EXCHANGE_URL=https://xyz.supabase.co/functions/v1/alfadocs-auth
+```
+
+### Create the auth client (`src/auth.ts`)
 
 ```ts
-import {
-  exchangeCodeForToken,
-  refreshAccessToken,
-  type OAuth2ClientConfig,
-} from '@alfadocs/oauth2-client';
+import { initAlfadocsAuth } from '@alfadocs/oauth2-client'
 
-const config: OAuth2ClientConfig = {
-  // You can omit these to use production defaults:
-  // authorizeEndpoint: 'https://app.alfadocs.com/oauth2/authorize',
-  // tokenEndpoint: 'https://app.alfadocs.com/oauth2/token',
-  clientId: process.env.ALFADOCS_CLIENT_ID!,
-  redirectUri: 'https://your-app.example.com/oauth/callback',
-  scopes: ['patient:view'],
-};
+export const auth = initAlfadocsAuth({
+  clientId:    import.meta.env.VITE_ALFADOCS_CLIENT_ID,
+  redirectUri: `${window.location.origin}/callback`,
+  exchangeUrl: import.meta.env.VITE_SUPABASE_EXCHANGE_URL,
+  baseUrl:     'https://app.alfadocs.com',
+})
+```
 
-// 1) Exchange authorization code for tokens
-async function exchangeCode(authCode: string, codeVerifier?: string) {
-  const tokenResponse = await exchangeCodeForToken({
-    config,
-    code: authCode,
-    codeVerifier,
-    clientSecret: process.env.ALFADOCS_CLIENT_SECRET, // for confidential clients
-  });
+### Restore session on app mount (`src/App.tsx`)
 
-  // Persist tokenResponse.access_token and tokenResponse.refresh_token securely
-  return tokenResponse;
-}
+```tsx
+import { useEffect, useState } from 'react'
+import { auth } from './auth'
 
-// 2) Refresh access token using refresh_token
-async function refreshTokens(refreshToken: string) {
-  const refreshed = await refreshAccessToken({
-    config,
-    refreshToken,
-    clientSecret: process.env.ALFADOCS_CLIENT_SECRET, // for confidential clients
-  });
+export function App() {
+  const [ready, setReady] = useState(false)
+  const [loggedIn, setLoggedIn] = useState(false)
 
-  // Persist refreshed.access_token (and refreshed.refresh_token if rotated)
-  return refreshed;
+  useEffect(() => {
+    auth.refreshSession()
+      .then(setLoggedIn)
+      .finally(() => setReady(true))
+  }, [])
+
+  if (!ready) return <p>Loading…</p>
+  if (!loggedIn) return <LoginPage />
+  return <Dashboard />
 }
 ```
 
-## Token expiry and refresh
+### Login button
 
-Before using the access token, call `isTokenExpiredOrExpiringSoon(tokenResponse, { obtainedAt, bufferSeconds })` to decide if you should refresh.
+```tsx
+import { auth } from '../auth'
 
-- **If it returns `true`** and you have a `refresh_token`, call `refreshAccessToken(...)`, then replace the stored token response and store a new `obtainedAt` (e.g. `Date.now()`). Your app is responsible for storage; the library only provides the predicate and `refreshAccessToken`.
-- **Options:**
-  - `obtainedAt`: timestamp in ms when the access token was issued (default `0` if omitted).
-  - `bufferSeconds`: treat the token as expiring if it expires within this many seconds (default `10`).
-
-Example:
-
-```ts
-import {
-  isTokenExpiredOrExpiringSoon,
-  refreshAccessToken,
-  type TokenExpiryCheckOptions,
-} from '@alfadocs/oauth2-client';
-
-// When about to use the token (e.g. before an API call):
-const options: TokenExpiryCheckOptions = {
-  obtainedAt: storedObtainedAt, // ms when you received the token
-  bufferSeconds: 10,
-};
-if (isTokenExpiredOrExpiringSoon(storedTokenResponse, options) && storedTokenResponse.refresh_token) {
-  const refreshed = await refreshAccessToken({ config, refreshToken: storedTokenResponse.refresh_token, clientSecret });
-  storedTokenResponse = refreshed;
-  storedObtainedAt = Date.now();
+export function LoginPage() {
+  return <button onClick={() => auth.login()}>Log in with Alfadocs</button>
 }
-// Use storedTokenResponse.access_token
 ```
 
+### Callback page (`src/pages/CallbackPage.tsx`)
+
+```tsx
+import { useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { auth } from '../auth'
+
+export function CallbackPage() {
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    auth.handleCallback()
+      .then(() => navigate('/dashboard'))
+      .catch(err => {
+        console.error('Login failed:', err)
+        navigate('/login')
+      })
+  }, [])
+
+  return <p>Logging you in…</p>
+}
+```
+
+### Logout
+
+```tsx
+import { auth } from '../auth'
+
+async function handleLogout() {
+  await auth.logout()
+  window.location.href = '/'
+}
+```
+
+---
+
+## API reference
+
+### `initAlfadocsAuth(config)`
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `clientId` | Yes | — | Your Alfadocs OAuth2 client ID |
+| `redirectUri` | Yes | — | Must match a registered redirect URI |
+| `exchangeUrl` | Yes | — | Your Supabase Edge Function URL |
+| `baseUrl` | No | `https://app.alfadocs.loc` | Alfadocs server URL |
+| `scopes` | No | `[]` | OAuth2 scopes to request |
+
+### `auth.login()`
+Redirects to Alfadocs login. Handles PKCE internally.
+
+### `auth.handleCallback(url?)`
+Call on your `/callback` route. Sends the code to your Supabase Edge Function, which sets the session cookie. Safe to call from a React `useEffect` (handles StrictMode double-invocation).
+
+### `auth.refreshSession()`
+Call once on app mount. Checks the session cookie via your Supabase Edge Function and restores auth state. Returns `true` if authenticated.
+
+### `auth.isAuthenticated()`
+Synchronous. Returns the in-memory auth state. Always `false` until `refreshSession()` or `handleCallback()` completes.
+
+### `auth.logout()`
+Calls your Supabase Edge Function to clear the cookie, then clears local state.
+
+---
+
+## Migration from v0.1.x
+
+| v0.1 | v0.2 |
+|---|---|
+| `exchangeCodeForToken()` | handled by Supabase Edge Function |
+| `refreshAccessToken()` | handled by Supabase Edge Function (`/session` auto-refreshes) |
+| `getAccessToken()` | removed — browser never holds a token |
+| `isTokenExpiredOrExpiringSoon()` | removed — handled server-side |
+| `OAuth2ClientConfig` | `AlfadocsAuthConfig` (add `exchangeUrl`) |
