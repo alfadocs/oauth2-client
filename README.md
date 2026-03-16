@@ -288,6 +288,64 @@ async function handleLogout() {
 
 ---
 
+## Step 3 — Calling Alfadocs APIs from Supabase
+
+Since the token lives in the httpOnly cookie on Supabase, all Alfadocs API calls must go through Supabase Edge Functions. Add a shared helper to read the token:
+
+**`supabase/functions/_shared/session.ts`**
+```ts
+const COOKIE_NAME = "alfadocs_session"
+
+export function getAccessToken(req: Request): string | null {
+  const header = req.headers.get("cookie") ?? ""
+  const match = header.match(new RegExp(`${COOKIE_NAME}=([^;]+)`))
+  if (!match) return null
+  try {
+    const session = JSON.parse(decodeURIComponent(match[1]))
+    return session.access_token ?? null
+  } catch {
+    return null
+  }
+}
+```
+
+Every Alfadocs API proxy function then looks like this:
+
+**`supabase/functions/get-patients/index.ts`**
+```ts
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { getAccessToken } from "../_shared/session.ts"
+
+const ALFADOCS_BASE_URL = Deno.env.get("ALFADOCS_BASE_URL") ?? "https://app.alfadocs.com"
+
+serve(async (req: Request) => {
+  const token = getAccessToken(req)
+  if (!token) return new Response("Unauthorized", { status: 401 })
+
+  const response = await fetch(`${ALFADOCS_BASE_URL}/api/patients`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+
+  const data = await response.json()
+  return new Response(JSON.stringify(data), {
+    status: response.status,
+    headers: { "Content-Type": "application/json" },
+  })
+})
+```
+
+From the Lovable frontend, call it with `credentials: "include"` so the cookie is sent:
+
+```ts
+const response = await fetch(
+  `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/get-patients`,
+  { credentials: "include" }
+)
+const patients = await response.json()
+```
+
+---
+
 ## API reference
 
 ### `initAlfadocsAuth(config)`
