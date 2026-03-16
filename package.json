@@ -1,6 +1,6 @@
 {
   "name": "@alfadocs/oauth2-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Drop-in OAuth2 PKCE client for Alfadocs authentication. One function, minimal setup.",
   "type": "module",
   "main": "dist/index.js",

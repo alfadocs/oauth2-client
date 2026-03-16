@@ -174,7 +174,7 @@ export function initAlfadocsAuth(config: AlfadocsAuthConfig): AlfadocsAuth {
   const baseUrl = (config.baseUrl ?? "https://app.alfadocs.loc").replace(/\/$/, "");
   const authorizeUrl = `${baseUrl}/oauth2/authorize`;
   const exchangeUrl = config.exchangeUrl.replace(/\/$/, "");
-  const scopes = config.scopes ?? [];
+  const scopes = config.scopes ?? ["allowed"];
 
   // In-memory auth state. Set by handleCallback / refreshSession, cleared by logout.
   // Lost on page refresh — call refreshSession() on mount to restore it.

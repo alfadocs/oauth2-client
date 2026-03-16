@@ -356,7 +356,7 @@ const patients = await response.json()
 | `redirectUri` | Yes | — | Must match a registered redirect URI |
 | `exchangeUrl` | Yes | — | Your Supabase Edge Function URL |
 | `baseUrl` | No | `https://app.alfadocs.loc` | Alfadocs server URL |
-| `scopes` | No | `[]` | OAuth2 scopes to request |
+| `scopes` | No | `["allowed"]` | OAuth2 scopes to request. Defaults to `"allowed"` (all registered scopes). |
 
 ### `auth.login()`
 Redirects to Alfadocs login. Handles PKCE internally.
