@@ -1,10 +1,10 @@
 @alfadocs/oauth2-client
 ========================
 
-Backend‑first **Alfadocs auth bridge for Supabase**.
+Backend‑first **Alfadocs auth library and Supabase identity bridge**.
 
 > **Proposal**  
-> This package started as a simple “OAuth 2.0 client” experiment, but the current design is a full **Alfadocs auth and Supabase identity bridge** (OAuth2/OIDC, opaque browser session, user mapping, RLS integration).  
+> This package started as a simple “OAuth 2.0 client” experiment, but the current design is a full **Alfadocs auth library and Supabase identity bridge** (OAuth2/OIDC, opaque browser session, user mapping, RLS integration).  
 > Because of that, the name `@alfadocs/oauth2-client` is misleading. The recommended name going forward is **`@alfadocs/alfadocs-auth`** (or similar), and this README describes that new, backend‑first design.
 
 Despite the package name, this is no longer “just an OAuth 2.0 client”. It is a small backend library that:
