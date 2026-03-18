@@ -1,7 +1,7 @@
 {
   "name": "@alfadocs/oauth2-client",
-  "version": "0.2.1",
-  "description": "Drop-in OAuth2 PKCE client for Alfadocs authentication. One function, minimal setup.",
+  "version": "0.3.0",
+  "description": "Backend-first Alfadocs auth library and Supabase identity bridge",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,6 +10,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./supabase": {
+      "types": "./dist/supabase/index.d.ts",
+      "import": "./dist/supabase/index.js",
+      "default": "./dist/supabase/index.js"
     }
   },
   "files": [
@@ -22,12 +27,15 @@
   "keywords": [
     "oauth2",
     "pkce",
-    "alfadocs"
+    "alfadocs",
+    "supabase",
+    "edge-functions",
+    "deno",
+    "auth"
   ],
   "author": "AlfaDocs",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^25.3.3",
     "typescript": "^5.6.3"
   }
 }
