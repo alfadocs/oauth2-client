@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local Alfadocs Auth App</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 740px; margin: 40px auto; padding: 0 16px; }
+      .row { display: flex; gap: 8px; margin: 12px 0; }
+      button { padding: 8px 12px; cursor: pointer; }
+      pre { background: #f4f4f4; padding: 12px; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <h1>Local Alfadocs Auth App</h1>
+    <p>This page uses your local backend endpoint at <code>/auth</code>.</p>
+
+    <div class="row">
+      <button id="login">Login</button>
+      <button id="session">Check Session</button>
+      <button id="logout">Logout</button>
+    </div>
+
+    <pre id="out">Ready.</pre>
+
+    <script>
+      const out = document.getElementById("out");
+      const print = (value) => {
+        out.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      };
+
+      document.getElementById("login").addEventListener("click", () => {
+        window.location.href = "/auth?action=login";
+      });
+
+      document.getElementById("session").addEventListener("click", async () => {
+        const res = await fetch("/auth", { credentials: "include" });
+        const body = await res.json().catch(() => ({ error: "Invalid JSON response" }));
+        print({ status: res.status, body });
+      });
+
+      document.getElementById("logout").addEventListener("click", async () => {
+        const res = await fetch("/auth", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const body = await res.json().catch(() => ({ error: "Invalid JSON response" }));
+        print({ status: res.status, body });
+      });
+    </script>
+  </body>
+</html>
