@@ -3,12 +3,12 @@
 This is a local app that uses this library directly.
 
 It runs:
-- a local backend endpoint at `/auth` using `createAlfadocsAuth(...)`
+- local backend endpoints at `/login`, `/callback`, `/session`, `/logout` using `createAlfadocsAuth(...)`
 - a simple frontend page at `/` with Login/Session/Logout buttons
 
 ## OAuth scopes
 
-Default authorize scopes are **`patient:list`**. The library sends the same list as standard **`scope`** on the **token** `POST` and as Alfadocs **`oauth_token_scopes`**.
+Default authorize scopes are **`patient:list`**. The Alfadocs server expects OAuth **`scope`** as a **single parameter** with **space-separated** values (e.g. `scope=patient:list` or `scope=a b c` when URL-encoded). The library sends the same space-separated `scope` on the **authorize** query string and on the **token** `POST` body.
 
 ### Prove what is sent (debug)
 
@@ -20,10 +20,7 @@ ALFADOCS_DEBUG_OAUTH=1
 
 Restart `server.mjs`. On **Login** you’ll see the full authorize URL including `scope=patient:list`. On **callback** you’ll see the token `POST` form fields; **`scope` should be `patient:list`**.
 
-`oauth_token_scopes` is sent as a single string with array format, e.g.:  
-`oauth_token_scopes=['patient:list']`.
-
-There is also a **unit test** that asserts both: `tests/core/auth.test.ts` (“sends patient:list on authorize redirect and on token exchange by default”).
+There is a **unit test** that asserts this: `tests/core/auth.test.ts` (“sends patient:list on authorize redirect and on token exchange by default”).
 
 This library always uses OAuth token client auth via **request body** (`client_id` + `client_secret` in form) to match the known working flow.
 
@@ -60,7 +57,7 @@ export ALFADOCS_SCOPES="patient:list"
 Use:
 
 ```text
-http://localhost:8787/auth
+http://localhost:8787/callback
 ```
 
 ## 3) Build and run
@@ -88,7 +85,7 @@ http://localhost:8787
 The authorize step worked, but **`POST .../oauth2/token`** rejected the request. Common causes:
 
 1. **`ALFADOCS_CLIENT_SECRET` wrong** or copied with extra spaces/quotes.
-2. **`redirect_uri` mismatch** — in Alfadocs, the registered redirect must match **exactly** what this app sends: `{APP_ORIGIN}/auth` (e.g. `http://localhost:8787/auth`). Same scheme, host, port, path, no trailing slash unless you registered one.
+2. **`redirect_uri` mismatch** — in Alfadocs, the registered redirect must match **exactly** what this app sends: `{APP_ORIGIN}/callback` (e.g. `http://localhost:8787/callback`). Same scheme, host, port, path, no trailing slash unless you registered one.
 3. **`ALFADOCS_BASE_URL` wrong** — dev vs production; OAuth client may exist only on one environment.
 4. **Authorization code reused or stale** — start login again from **Login** (single-use code).
 5. **Token client auth mode** is fixed to body (`client_id` + `client_secret` in form) to match the old working integration.

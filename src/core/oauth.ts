@@ -3,6 +3,7 @@
  * All functions talk to the Alfadocs server via standard fetch().
  */
 
+import { decodeJwt } from "jose";
 import type { AlfadocsUser, SessionData } from "./session.js";
 
 /** Pull a readable message from OAuth token error payloads (JSON or form). */
@@ -45,14 +46,14 @@ function formatMeEndpointError(status: number, raw: string): string {
   return `${scopeHint}(HTTP ${status}) ${snippet}`;
 }
 
-/** Read space-separated scopes from a JWT access token payload, if present. */
+/**
+ * Read space-separated scopes from a JWT access token payload, if present.
+ * Uses `jose` decode only — no signature verification (appropriate for filling `scope`
+ * when the token response JSON omits it; verification belongs in future dedicated APIs).
+ */
 function tryScopesFromJwtAccessToken(accessToken: string): string | undefined {
-  const parts = accessToken.split(".");
-  if (parts.length !== 3) return undefined;
   try {
-    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padLen = (4 - (b64.length % 4)) % 4;
-    const payload = JSON.parse(atob(b64 + "=".repeat(padLen))) as {
+    const payload = decodeJwt(accessToken) as {
       scope?: unknown;
       scp?: unknown;
     };
@@ -61,7 +62,7 @@ function tryScopesFromJwtAccessToken(accessToken: string): string | undefined {
     if (typeof payload.scp === "string") return payload.scp;
     if (Array.isArray(payload.scp)) return payload.scp.join(" ");
   } catch {
-    /* not a JWT or bad payload */
+    /* opaque token or malformed JWT */
   }
   return undefined;
 }
@@ -100,7 +101,7 @@ export interface ExchangeCodeParams {
   codeVerifier: string;
   /**
    * Scopes from the authorize step. When non-empty, sends standard OAuth `scope` (space-separated)
-   * and Alfadocs `oauth_token_scopes` on this POST.
+   * and Alfadocs `oauth_scope_list` as a bracket string, e.g. `['a','b']`.
    */
   scopes?: string[];
 }
@@ -136,11 +137,10 @@ export async function exchangeCodeForToken(
     "Content-Type": "application/x-www-form-urlencoded",
   };
 
-  const scopeList =
-    params.scopes?.map((s) => s.trim()).filter(Boolean) ?? [];
+  const scopeList = params.scopes?.map((s) => s.trim()).filter(Boolean) ?? [];
   if (scopeList.length > 0) {
     body.set("scope", scopeList.join(" "));
-    body.set("oauth_token_scopes", `['${scopeList.join("','")}']`);
+    body.set("oauth_scope_list", `['${scopeList.join("','")}']`);
   }
 
   let res: Response;

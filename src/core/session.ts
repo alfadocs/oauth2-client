@@ -11,9 +11,14 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-/** Alfadocs user info returned by /api/v1/me */
+/**
+ * Alfadocs user info from `/api/v1/me` — often wrapped as
+ * `{ status: string, data: { userId, userEmail, ... } }`.
+ */
 export interface AlfadocsUser {
-  id?: string | number;
+  status?: string;
+  data?: Record<string, unknown>;
+  userId?: string | number;
   email?: string;
   name?: string;
   /** Any additional fields returned by the API */

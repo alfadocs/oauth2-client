@@ -1,25 +1,44 @@
 // Small helpers shared by the auth factory. Split out so `auth.ts` stays mostly flow wiring.
 
+function asRecord(v: unknown): Record<string, unknown> | null {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
+  return null;
+}
+
+function pickUserId(o: Record<string, unknown>): string {
+  const v = o.userId;
+  if (typeof v === "string" && v.trim().length > 0) return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return "";
+}
+
 // We persist a username for quick display/search; this fallback chain avoids rejecting
 // valid logins when the provider profile shape differs across environments.
 export function inferUsername(user: Record<string, unknown>): string {
   const fromEmail = user.email;
   if (typeof fromEmail === "string" && fromEmail.length > 0) return fromEmail;
+  const data = asRecord(user.data);
+  if (data) {
+    const userEmail = data.userEmail;
+    if (typeof userEmail === "string" && userEmail.length > 0) return userEmail;
+    const ownerEmail = data.ownerEmail;
+    if (typeof ownerEmail === "string" && ownerEmail.length > 0) return ownerEmail;
+  }
   const fromName = user.name;
   if (typeof fromName === "string" && fromName.length > 0) return fromName;
-  const fromId = user.id;
-  if (typeof fromId === "string" && fromId.length > 0) return fromId;
-  if (typeof fromId === "number") return String(fromId);
-  return "unknown";
+  const nestedId = data ? pickUserId(data) : "";
+  if (nestedId) return nestedId;
+  return pickUserId(user) || "unknown";
 }
 
-// Build a stable user id from provider profile data when available.
-// Keeping this in one place avoids subtle id-shape drift between call sites.
-export function inferUserId(profile: Record<string, unknown>): string {
-  const profileId = profile.id;
-  if (typeof profileId === "string" && profileId.length > 0) return profileId;
-  if (typeof profileId === "number") return String(profileId);
-  return "";
+/** Alfadocs `/api/v1/me` wraps the payload in `{ status, data: { userId, ... } }`. */
+export function userIdFromProfile(profile: Record<string, unknown>): string {
+  const data = asRecord(profile.data);
+  if (data) {
+    const id = pickUserId(data);
+    if (id) return id;
+  }
+  return pickUserId(profile);
 }
 
 // Convert unknown thrown values into readable API errors for operators and clients.
@@ -47,16 +66,4 @@ export function formatUnknownError(err: unknown): string {
     }
   }
   return String(err);
-}
-
-function normalizeScopeList(value: string[] | string): string[] {
-  return (Array.isArray(value) ? value : [value]).map((v) => v.trim()).filter(Boolean);
-}
-
-// Alfadocs expects `oauth_token_scopes` as a single string in array-like format.
-export function appendOauthTokenScopes(params: URLSearchParams, key: string, value: string[] | string): void {
-  const clean = normalizeScopeList(value);
-  if (clean.length === 0) return;
-  const encoded = `['${clean.join("','")}']`;
-  params.set(key, encoded);
 }

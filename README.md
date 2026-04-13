@@ -63,17 +63,17 @@ const auth = createAlfadocsAuth({
 ```
 
 `auth.handleRequest(req)` routes:
-- `OPTIONS` -> CORS preflight
-- `GET ?action=login` -> start OAuth login
-- `GET ?code=...` -> callback exchange + user/session persistence
-- `GET` -> session check
-- `POST` -> logout (cookie clear)
+- `OPTIONS <any-path>` -> CORS preflight
+- `GET /login` -> start OAuth login
+- `GET /callback` -> callback exchange + user/session persistence
+- `GET /session` -> session check
+- `POST /logout` -> logout (origin-checked, cookie clear + session invalidation)
 
 ## Storage interfaces
 
 The core is now decoupled from infrastructure via split interfaces:
 - `UserStore` (`getUser`, `createUser(userId, username, authData)`, `updateUser`)
-- `SessionStore` (`createSession`, `getSession`)
+- `SessionStore` (`createSession`, `getSession`, `deleteSession`)
 - `AuthStorage` (`UserStore & SessionStore`)
 
 ## Supabase optimistic migrations

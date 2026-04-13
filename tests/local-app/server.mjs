@@ -54,7 +54,7 @@ const auth = createAlfadocsAuth({
   clientId: process.env.ALFADOCS_CLIENT_ID,
   clientSecret: process.env.ALFADOCS_CLIENT_SECRET,
   baseUrl: process.env.ALFADOCS_BASE_URL,
-  redirectUri: `${APP_ORIGIN}/auth`,
+  redirectUri: `${APP_ORIGIN}/callback`,
   appOrigin: APP_ORIGIN,
   appPostLoginPath: "/",
   cookieSecure: false,
@@ -124,7 +124,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (pathname === "/auth") {
+  if (
+    pathname === "/login" ||
+    pathname === "/callback" ||
+    pathname === "/session" ||
+    pathname === "/logout"
+  ) {
     const webReq = await toRequest(req);
     const webRes = await auth.handleRequest(webReq);
     await writeResponse(res, webRes);

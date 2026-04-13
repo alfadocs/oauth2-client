@@ -1,4 +1,4 @@
-import { appendOauthTokenScopes, formatUnknownError, inferUserId, inferUsername } from "./auth-utils.js";
+import { formatUnknownError, userIdFromProfile, inferUsername } from "./auth-utils.js";
 import { parseCookies, serializeCookie } from "./cookie.js";
 import { exchangeCodeForToken, fetchUserInfo } from "./oauth.js";
 import type { TokenResponse } from "./oauth.js";
@@ -17,8 +17,8 @@ export interface AlfadocsAuthConfig {
   cookieName?: string;
   preAuthCookieName?: string;
   /**
-   * OAuth2 scopes (`scope` on authorize). Default: `["patient:list"]`.
-   * The same list is sent on the token `POST` as standard `scope` (space-separated) and as Alfadocs `oauth_token_scopes`.
+   * OAuth2 scopes: space-separated `scope` on authorize and on the token `POST`, plus `oauth_scope_list`
+   * (bracket string) on the token request. Default: `["patient:list"]`.
    */
   scopes?: string[];
   /**
@@ -50,7 +50,7 @@ export interface AlfadocsAuth {
   handleLogin(req: Request): Promise<Response>;
   handleCallback(req: Request): Promise<Response>;
   handleSession(req: Request): Promise<Response>;
-  handleLogout(req: Request): Response;
+  handleLogout(req: Request): Promise<Response>;
   handleRequest(req: Request): Promise<Response>;
 }
 
@@ -85,13 +85,10 @@ export function createAlfadocsAuth(config: AlfadocsAuthConfig): AlfadocsAuth {
             typeof init.body === "string"
           ) {
             const formParams = new URLSearchParams(init.body);
-            const fields = Object.fromEntries(formParams.entries());
-            console.warn("[@alfadocs/auth] POST /oauth2/token form:", fields);
-            console.warn("[@alfadocs/auth] POST /oauth2/token raw body:", init.body);
             console.warn("[@alfadocs/auth] scope in token request:", formParams.get("scope"));
             console.warn(
-              "[@alfadocs/auth] oauth_token_scopes in token request:",
-              formParams.get("oauth_token_scopes"),
+              "[@alfadocs/auth] oauth_scope_list in token request:",
+              formParams.get("oauth_scope_list"),
             );
           }
           return baseFetch(input, init);
@@ -125,15 +122,21 @@ export function createAlfadocsAuth(config: AlfadocsAuthConfig): AlfadocsAuth {
     return jsonResponse({ authenticated: false });
   }
 
+  // Centralize origin validation for CSRF protection and reuse in future mutations.
+  function isTrustedOrigin(req: Request): boolean {
+    const origin = req.headers.get("origin");
+    return origin === appOrigin;
+  }
+
   // Synchronize provider profile into storage on each login callback.
   // This keeps authData fresh while preserving stable user identity when possible.
   async function upsertUserFromProfile(profile: Record<string, unknown>): Promise<StoredUser> {
-    const userId = inferUserId(profile);
+    const userId = userIdFromProfile(profile);
     const username = inferUsername(profile);
     const authData = profile;
 
     if (!userId) {
-      return config.storage.createUser(crypto.randomUUID(), username, authData);
+      throw new Error("Profile does not contain `userId`");
     }
 
     const existing = await config.storage.getUser(userId);
@@ -169,14 +172,9 @@ export function createAlfadocsAuth(config: AlfadocsAuthConfig): AlfadocsAuth {
       code_challenge_method: "S256",
     });
     if (scopes.length > 0) params.set("scope", scopes.join(" "));
-    appendOauthTokenScopes(params, "oauth_token_scopes", scopes);
     if (config.oauthDebug === true) {
       console.warn("[@alfadocs/auth] redirect to authorize:", `${authorizeUrl}?${params}`);
       console.warn("[@alfadocs/auth] scope in authorize URL:", params.get("scope"));
-      console.warn(
-        "[@alfadocs/auth] oauth_token_scopes in authorize URL:",
-        params.get("oauth_token_scopes"),
-      );
     }
 
     return new Response(null, {
@@ -300,8 +298,18 @@ export function createAlfadocsAuth(config: AlfadocsAuthConfig): AlfadocsAuth {
     }
   }
 
-  // Logout is cookie invalidation only; session lookup becomes unauthenticated next request.
-  function handleLogout(_req: Request): Response {
+  // Logout invalidates both cookie and persisted session to prevent replay.
+  async function handleLogout(req: Request): Promise<Response> {
+    const cookies = parseCookies(req.headers.get("cookie") ?? "");
+    const cookieValue = cookies[cookieName];
+    if (cookieValue) {
+      try {
+        await config.storage.deleteSession(cookieValue);
+      } catch (err) {
+        const msg = formatUnknownError(err);
+        return errorResponse(500, `Failed deleting session: ${msg}`);
+      }
+    }
     const clear = serializeCookie(cookieName, "", {
       httpOnly: true,
       secure: cookieSecure,
@@ -311,14 +319,23 @@ export function createAlfadocsAuth(config: AlfadocsAuthConfig): AlfadocsAuth {
     return jsonResponse({ ok: true }, 200, { "Set-Cookie": clear });
   }
 
-  // Single entrypoint router so deployment targets only need to call one method.
+  // Single entrypoint router with explicit auth paths for readability and predictable behavior.
   async function handleRequest(req: Request): Promise<Response> {
     if (req.method === "OPTIONS") return handleOptions(req);
     const url = new URL(req.url);
-    if (req.method === "POST") return handleLogout(req);
-    if (url.searchParams.get("action") === "login") return handleLogin(req);
-    if (url.searchParams.has("code") || url.searchParams.has("error")) return handleCallback(req);
-    return handleSession(req);
+    const path = url.pathname;
+    if (req.method === "POST") {
+      if (!isTrustedOrigin(req)) {
+        return errorResponse(403, "Forbidden: origin mismatch");
+      }
+      if (path !== "/logout") return errorResponse(405, "Method not allowed");
+      return handleLogout(req);
+    }
+    if (req.method !== "GET") return errorResponse(405, "Method not allowed");
+    if (path === "/login") return handleLogin(req);
+    if (path === "/callback") return handleCallback(req);
+    if (path === "/session") return handleSession(req);
+    return errorResponse(404, "Not found");
   }
 
   return { handleOptions, handleLogin, handleCallback, handleSession, handleLogout, handleRequest };

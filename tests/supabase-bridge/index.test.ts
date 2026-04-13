@@ -74,4 +74,21 @@ describe("createSupabaseStorage", () => {
     expect(calledUrls).toHaveLength(1);
     expect(calledUrls[0]).toContain("/rest/v1/users");
   });
+
+  it("deletes session by cookie value", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const storage = createSupabaseStorage({
+      supabaseUrl: "https://project.supabase.co",
+      serviceRoleKey: "srk",
+      databaseUrl: "postgresql://postgres:password@db.project.supabase.co:5432/postgres",
+    });
+
+    await storage.deleteSession("cookie-1");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/rest/v1/sessions?cookie_value=eq.cookie-1");
+    expect(init.method).toBe("DELETE");
+  });
 });

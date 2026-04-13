@@ -21,7 +21,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-migrations.mjs",
     "local:test-app": "npm run build && node tests/local-app/server.mjs",
     "test": "vitest run",
     "prepare": "npm run build"
@@ -42,6 +42,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
+    "jose": "^6.2.2",
     "postgres": "^3.4.9"
   }
 }

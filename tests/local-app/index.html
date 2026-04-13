@@ -13,7 +13,7 @@
   </head>
   <body>
     <h1>Local Alfadocs Auth App</h1>
-    <p>This page uses your local backend endpoint at <code>/auth</code>.</p>
+    <p>This page uses your local backend endpoints <code>/login</code>, <code>/callback</code>, <code>/session</code>, and <code>/logout</code>.</p>
 
     <div class="row">
       <button id="login">Login</button>
@@ -30,17 +30,17 @@
       };
 
       document.getElementById("login").addEventListener("click", () => {
-        window.location.href = "/auth?action=login";
+        window.location.href = "/login";
       });
 
       document.getElementById("session").addEventListener("click", async () => {
-        const res = await fetch("/auth", { credentials: "include" });
+        const res = await fetch("/session", { credentials: "include" });
         const body = await res.json().catch(() => ({ error: "Invalid JSON response" }));
         print({ status: res.status, body });
       });
 
       document.getElementById("logout").addEventListener("click", async () => {
-        const res = await fetch("/auth", {
+        const res = await fetch("/logout", {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },

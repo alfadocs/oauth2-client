@@ -1,4 +1,5 @@
 import type { AuthStorage, StoredSession, StoredUser } from "../core/storage.js";
+import { readFile } from "node:fs/promises";
 
 export interface SupabaseStorageConfig {
   supabaseUrl: string;
@@ -27,27 +28,21 @@ function quoteIdentifier(value: string): string {
   return `"${value}"`;
 }
 
-// Generate schema-aware migration SQL so REST headers and database DDL stay aligned.
-function buildMigrations(schema: string): string[] {
-  const s = quoteIdentifier(schema);
-  return [
-    `
-    create table if not exists ${s}.users (
-      id text primary key,
-      username text not null,
-      auth_data jsonb not null default '{}'::jsonb,
-      created_at timestamptz not null default now()
-    );
-    `,
-    `
-    create table if not exists ${s}.sessions (
-      cookie_value text primary key,
-      user_id text not null references ${s}.users(id) on delete cascade,
-      created_at timestamptz not null default now()
-    );
-    create index if not exists sessions_user_id_idx on ${s}.sessions(user_id);
-    `,
-  ];
+const MIGRATION_FILE_URLS: URL[] = [
+  new URL("./migrations/001_create_users.sql", import.meta.url),
+  new URL("./migrations/002_create_sessions.sql", import.meta.url),
+];
+
+// Load SQL from migration files so DDL has a single source of truth.
+// Schema is applied dynamically by replacing `public.` references in the file.
+async function loadMigrations(schema: string): Promise<string[]> {
+  const schemaQualified = `${quoteIdentifier(schema)}.`;
+  const queries: string[] = [];
+  for (const fileUrl of MIGRATION_FILE_URLS) {
+    const sql = await readFile(fileUrl, "utf8");
+    queries.push(sql.replaceAll("public.", schemaQualified));
+  }
+  return queries;
 }
 
 // Centralize common headers so every request uses the same auth/profile context.
@@ -107,7 +102,6 @@ function wrapSupabaseNetworkError(url: string, err: unknown): Error {
 // stays infrastructure-agnostic and bridges can be swapped later.
 export function createSupabaseStorage(config: SupabaseStorageConfig): AuthStorage {
   const schema = config.schema ?? "public";
-  const migrations = buildMigrations(schema);
   const baseUrl = config.supabaseUrl.replace(/\/$/, "");
   const headers = buildHeaders(config.serviceRoleKey, schema);
   const httpFetch: typeof globalThis.fetch =
@@ -144,6 +138,7 @@ export function createSupabaseStorage(config: SupabaseStorageConfig): AuthStorag
       const postgres = (postgresModule as { default: (url: string, opts?: unknown) => any }).default;
       const sql = postgres(config.databaseUrl, { ssl: "require" });
       try {
+        const migrations = await loadMigrations(schema);
         for (const query of migrations) {
           await sql.unsafe(query);
         }
@@ -254,15 +249,23 @@ export function createSupabaseStorage(config: SupabaseStorageConfig): AuthStorag
     async createSession(userId: string): Promise<StoredSession> {
       return withOptimisticMigrations(async () => {
         const cookieValue = crypto.randomUUID();
-        const rows = await postgrest<Array<{ cookie_value: string; user_id: string }>>(
+        const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+        const expiresAtIso = new Date(expiresAt).toISOString();
+        const rows = await postgrest<Array<{ cookie_value: string; user_id: string; expires_at: string }>>(
           "sessions",
           {
             method: "POST",
-            body: JSON.stringify([{ cookie_value: cookieValue, user_id: userId }]),
+            body: JSON.stringify([
+              { cookie_value: cookieValue, user_id: userId, expires_at: expiresAtIso },
+            ]),
           },
         );
         const row = rows[0];
-        return { cookieValue: row.cookie_value, userId: row.user_id };
+        return {
+          cookieValue: row.cookie_value,
+          userId: row.user_id,
+          expiresAt: Date.parse(row.expires_at),
+        };
       });
     },
 
@@ -270,13 +273,27 @@ export function createSupabaseStorage(config: SupabaseStorageConfig): AuthStorag
     // Core auth can then fetch user data separately through the UserStore contract.
     async getSession(cookieValue: string): Promise<StoredSession | null> {
       return withOptimisticMigrations(async () => {
-        const rows = await postgrest<Array<{ cookie_value: string; user_id: string }>>(
-          `sessions?cookie_value=eq.${encodeURIComponent(cookieValue)}&select=cookie_value,user_id&limit=1`,
+        const nowIso = new Date().toISOString();
+        const rows = await postgrest<Array<{ cookie_value: string; user_id: string; expires_at: string }>>(
+          `sessions?cookie_value=eq.${encodeURIComponent(cookieValue)}&expires_at=gt.${encodeURIComponent(nowIso)}&select=cookie_value,user_id,expires_at&limit=1`,
           { method: "GET", headers: { Prefer: "" } },
         );
         const row = rows[0];
         if (!row) return null;
-        return { cookieValue: row.cookie_value, userId: row.user_id };
+        return {
+          cookieValue: row.cookie_value,
+          userId: row.user_id,
+          expiresAt: Date.parse(row.expires_at),
+        };
+      });
+    },
+    // Explicit session deletion allows logout to invalidate server state (not only browser cookie).
+    async deleteSession(cookieValue: string): Promise<void> {
+      await withOptimisticMigrations(async () => {
+        await postgrest<void>(
+          `sessions?cookie_value=eq.${encodeURIComponent(cookieValue)}`,
+          { method: "DELETE", headers: { Prefer: "" } },
+        );
       });
     },
   };

@@ -12,6 +12,8 @@ export interface StoredUser {
 export interface StoredSession {
   userId: string;
   cookieValue: string;
+  /** Unix epoch milliseconds when the session should be treated as expired. */
+  expiresAt: number;
 }
 
 export interface UserStore {
@@ -30,6 +32,7 @@ export interface UserStore {
 export interface SessionStore {
   createSession(userId: string): Promise<StoredSession>;
   getSession(cookieValue: string): Promise<StoredSession | null>;
+  deleteSession(cookieValue: string): Promise<void>;
 }
 
 export type AuthStorage = UserStore & SessionStore;
