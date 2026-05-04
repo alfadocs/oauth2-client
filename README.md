@@ -54,6 +54,21 @@ Tables **`alfa_users`** and **`alfa_sessions`** are **multi-tenant**: every row 
 
 **RLS:** the shipped migration enables **row level security** on **`alfa_*`** with **no policies** for normal roles, so **`anon` / `authenticated`** PostgREST traffic cannot read or write those rows (hardening if a key is misused). The **service role** used by this bridge **bypasses RLS** in Supabase, so your server-side `fetch` calls keep working. Add policies only if you intentionally expose these tables to user JWTs.
 
+## App Supabase vs auth Supabase (don’t mix keys)
+
+Many apps already have a **Supabase project** for product data (often with the **`anon`** key in the browser and **`SUPABASE_URL`** in env). **`createSupabaseStorage`** is separate: it talks to the project where **`alfa_users`** / **`alfa_sessions`** live.
+
+| | **Your app’s Supabase** (typical) | **Auth storage Supabase** (`createSupabaseStorage`) |
+|--|--|--|
+| **Purpose** | Your tables, RLS, maybe Supabase Auth for end users | Only Alfadocs session + user rows for this library |
+| **URL env** | Often `SUPABASE_URL`, `VITE_SUPABASE_URL`, etc. | Use **`AUTH_SUPABASE_URL`** (or pass that string as `supabaseUrl`) |
+| **Key** | Often **`anon`** in clients; server may use **service role** for admin jobs | Must be **service role** JWT for the **same project as `AUTH_SUPABASE_URL`** — set as **`AUTH_SUPABASE_KEY`** |
+| **Safe in browser?** | `anon` only | **Never** — service role bypasses RLS |
+
+**Common mistake:** pasting the app project’s **anon** key or **wrong project’s** service role into `createSupabaseStorage` → 401/404 on `alfa_*`, data missing, or writes to the wrong database. The URL and service role **must both** come from the project that actually has **`alfa_users`** / **`alfa_sessions`** (or from your dedicated central auth project).
+
+Using **one** Supabase project for both app data and Alfadocs auth is fine **on purpose** — still use **`AUTH_SUPABASE_URL`** / **`AUTH_SUPABASE_KEY`** in code for the bridge so env names stay unambiguous.
+
 ## Usage
 
 ```ts
@@ -66,6 +81,7 @@ const auth = createAlfadocsAuth({
   redirectUri: "...",
   appOrigin: "https://myapp.example",
   storage: createSupabaseStorage({
+    // Must be the project where alfa_users / alfa_sessions exist (see table above).
     supabaseUrl: process.env.AUTH_SUPABASE_URL!,
     serviceRoleKey: process.env.AUTH_SUPABASE_KEY!,
     oauthClientId: process.env.ALFADOCS_CLIENT_ID!,
