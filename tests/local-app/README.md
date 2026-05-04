@@ -38,10 +38,15 @@ Export these before starting:
 export ALFADOCS_CLIENT_ID="..."
 export ALFADOCS_CLIENT_SECRET="..."
 export ALFADOCS_BASE_URL="https://app.alfadocs.com"
-export SUPABASE_URL="https://<project-ref>.supabase.co"
-export SUPABASE_SERVICE_ROLE_KEY="..."
-export SUPABASE_DB_URL="postgresql://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres"
+# Auth storage Supabase (recommended names — distinct from a “main” app Supabase):
+export AUTH_SUPABASE_URL="https://<project-ref>.supabase.co"
+export AUTH_SUPABASE_KEY="..."
+# Stable id for this app in the shared auth DB (defaults to local_dev if omitted):
+export AUTH_APP_ID="my-lovable-project-slug"
+# Or legacy: SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
 ```
+
+Create **`alfa_users`** / **`alfa_sessions`** in your auth Supabase project (see root [README.md](../../README.md) **Supabase tables**). The local app uses PostgREST only (no Postgres connection string).
 
 Optional:
 
@@ -113,5 +118,5 @@ Alternative (whole process): `NODE_TLS_REJECT_UNAUTHORIZED=0` — avoid if possi
 That usually means **no TCP/TLS connection** to the URL (not an HTTP 4xx/5xx body). Check:
 
 1. **`ALFADOCS_BASE_URL`** must be reachable from the machine running `server.mjs` (real HTTPS host or your local Alfadocs dev URL). A typo or an internal hostname only valid in the browser will fail here.
-2. **`SUPABASE_URL`** must be exactly `https://<project-ref>.supabase.co` with no trailing slash issues; corporate VPN or offline mode can block it.
-3. If migration fails, verify `SUPABASE_DB_URL` (password/host/port/database) and network access from where `server.mjs` is running.
+2. **`AUTH_SUPABASE_URL`** (or `SUPABASE_URL`) must be exactly `https://<project-ref>.supabase.co` with no trailing slash issues; corporate VPN or offline mode can block it.
+3. If storage calls fail (e.g. missing table or 401), confirm you applied [`supabase/migrations/`](../../supabase/migrations/) and that **`AUTH_SUPABASE_KEY`** (or `SUPABASE_SERVICE_ROLE_KEY`) is the **service role** secret.

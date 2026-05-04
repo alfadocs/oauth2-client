@@ -18,19 +18,23 @@ dotenv.config({ path: join(__dirname, ".env") });
 const PORT = Number(process.env.PORT ?? 8787);
 const APP_ORIGIN = process.env.APP_ORIGIN ?? `http://localhost:${PORT}`;
 
-const required = [
-  "ALFADOCS_CLIENT_ID",
-  "ALFADOCS_CLIENT_SECRET",
-  "ALFADOCS_BASE_URL",
-  "SUPABASE_URL",
-  "SUPABASE_SERVICE_ROLE_KEY",
-  "SUPABASE_DB_URL",
-];
+const required = ["ALFADOCS_CLIENT_ID", "ALFADOCS_CLIENT_SECRET", "ALFADOCS_BASE_URL"];
 for (const key of required) {
   if (!process.env[key]) {
     throw new Error(`Missing required env var: ${key}`);
   }
 }
+
+const authSupabaseUrl = process.env.AUTH_SUPABASE_URL ?? process.env.SUPABASE_URL;
+const authSupabaseKey =
+  process.env.AUTH_SUPABASE_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+if (!authSupabaseUrl || !authSupabaseKey) {
+  throw new Error(
+    "Missing auth Supabase env: set AUTH_SUPABASE_URL + AUTH_SUPABASE_KEY (recommended), or SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY",
+  );
+}
+
+const authAppId = process.env.AUTH_APP_ID ?? "local_dev";
 
 /** Dev-only: self-signed or private CA HTTPS (Alfadocs + Supabase HTTP calls from this server). */
 function createTlsInsecureFetch() {
@@ -62,9 +66,9 @@ const auth = createAlfadocsAuth({
   ...(alfadocsScopes && alfadocsScopes.length > 0 ? { scopes: alfadocsScopes } : {}),
   ...(devFetch ? { fetch: devFetch } : {}),
   storage: createSupabaseStorage({
-    supabaseUrl: process.env.SUPABASE_URL,
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-    databaseUrl: process.env.SUPABASE_DB_URL,
+    supabaseUrl: authSupabaseUrl,
+    serviceRoleKey: authSupabaseKey,
+    appId: authAppId,
     ...(devFetch ? { fetch: devFetch } : {}),
   }),
 });

@@ -1,0 +1,6 @@
+{
+  "compilerOptions": {
+    "lib": ["deno.ns", "dom", "esnext"]
+  },
+  "unstable": ["sloppy-imports"]
+}
