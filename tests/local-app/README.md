@@ -46,6 +46,8 @@ export AUTH_APP_ID="my-lovable-project-slug"
 # Or legacy: SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
 ```
 
+If your product already has its own Supabase URL/keys, **do not reuse the app’s anon key** (or the wrong project’s service role) for the vars above — see root [README.md](../../README.md) section **App Supabase vs auth Supabase (don’t mix keys)**.
+
 Create **`alfa_users`** / **`alfa_sessions`** in your auth Supabase project (see root [README.md](../../README.md) **Supabase tables**). The local app uses PostgREST only (no Postgres connection string).
 
 Optional:
