@@ -114,13 +114,56 @@ describe("createSupabaseStorage", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("app_id=eq.my-app-1");
   });
 
-  it("rejects invalid appId", () => {
+  it("rejects invalid tenant scope", () => {
     expect(() =>
       createSupabaseStorage({
         supabaseUrl: "https://p.supabase.co",
         serviceRoleKey: "k",
         appId: "has space",
       }),
-    ).toThrow(/Invalid appId/);
+    ).toThrow(/Invalid tenant scope/);
+  });
+
+  it("uses oauthClientId as app_id when appId is omitted", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify([{ id: "u1", username: "j", auth_data: {} }]), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const storage = createSupabaseStorage({
+      supabaseUrl: "https://project.supabase.co",
+      serviceRoleKey: "srk",
+      oauthClientId: "alfadocs-oauth-client-99",
+    });
+    await storage.getUser("u1");
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain("app_id=eq.alfadocs-oauth-client-99");
+  });
+
+  it("prefers appId over oauthClientId when both are set", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify([{ id: "u1", username: "j", auth_data: {} }]), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const storage = createSupabaseStorage({
+      supabaseUrl: "https://project.supabase.co",
+      serviceRoleKey: "srk",
+      appId: "explicit-app",
+      oauthClientId: "oauth-ignored",
+    });
+    await storage.getUser("u1");
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain("app_id=eq.explicit-app");
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("oauth-ignored");
+  });
+
+  it("requires appId or oauthClientId", () => {
+    expect(() =>
+      createSupabaseStorage({
+        supabaseUrl: "https://p.supabase.co",
+        serviceRoleKey: "k",
+      }),
+    ).toThrow(/Set `appId`/);
   });
 });

@@ -44,13 +44,13 @@ npm install @alfadocs/auth
 
 ## Supabase tables (one-time)
 
-Tables **`alfa_users`** and **`alfa_sessions`** are **multi-tenant**: every row includes **`app_id`**. Primary keys are **`(app_id, id)`** and **`(app_id, cookie_value)`**. The bridge passes a stable **`appId`** from config on every PostgREST request.
+Tables **`alfa_users`** and **`alfa_sessions`** are **multi-tenant**: every row includes **`app_id`**. Primary keys are **`(app_id, id)`** and **`(app_id, cookie_value)`**. The bridge sets `app_id` from **`appId`** or, if omitted, from **`oauthClientId`** (Alfadocs OAuth **`client_id`**) on every PostgREST request.
 
 **Breaking:** if you previously used the old **`alfadocs_auth_ensure_schema`** RPC, new migrations **`DROP FUNCTION IF EXISTS`** it. If you had tables **without** `app_id`, drop `alfa_sessions` then `alfa_users` before applying.
 
 **Apply DDL:** use [`supabase/migrations/`](supabase/migrations/) — run **`supabase db push`** with the [Supabase CLI](https://supabase.com/docs/guides/cli), or paste the latest migration SQL into the [Supabase SQL editor](https://supabase.com/dashboard). That creates **`alfa_*`** in `public` and **`NOTIFY pgrst, 'reload schema'`** so PostgREST reloads.
 
-**Shared auth project (e.g. Lovable / Edge):** one Supabase project can back many apps. Use server env vars such as **`AUTH_SUPABASE_URL`**, **`AUTH_SUPABASE_KEY`**, and a stable **`AUTH_APP_ID`** per app. Pass them into **`createSupabaseStorage({ supabaseUrl, serviceRoleKey, appId })`**. Treat the service role as a root secret.
+**Shared auth project (e.g. Lovable / Edge):** one Supabase project can back many apps. Use **`AUTH_SUPABASE_URL`** and **`AUTH_SUPABASE_KEY`**. For the `app_id` row scope, pass **`appId`** (e.g. **`AUTH_APP_ID`**) and/or **`oauthClientId`** (your Alfadocs OAuth **`client_id`**). If **`appId`** is omitted, **`oauthClientId`** is used — fine when one OAuth client maps to one tenant. Prefer an explicit **`appId`** when several apps share the same `client_id` or you want a non-public identifier. **`createSupabaseStorage({ supabaseUrl, serviceRoleKey, appId?, oauthClientId? })`**. Treat the service role as a root secret.
 
 **RLS:** the shipped migration enables **row level security** on **`alfa_*`** with **no policies** for normal roles, so **`anon` / `authenticated`** PostgREST traffic cannot read or write those rows (hardening if a key is misused). The **service role** used by this bridge **bypasses RLS** in Supabase, so your server-side `fetch` calls keep working. Add policies only if you intentionally expose these tables to user JWTs.
 
@@ -68,7 +68,8 @@ const auth = createAlfadocsAuth({
   storage: createSupabaseStorage({
     supabaseUrl: process.env.AUTH_SUPABASE_URL!,
     serviceRoleKey: process.env.AUTH_SUPABASE_KEY!,
-    appId: process.env.AUTH_APP_ID!,
+    oauthClientId: process.env.ALFADOCS_CLIENT_ID!,
+    // Optional override: appId: process.env.AUTH_APP_ID,
   }),
 });
 ```

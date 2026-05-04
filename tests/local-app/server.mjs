@@ -34,8 +34,6 @@ if (!authSupabaseUrl || !authSupabaseKey) {
   );
 }
 
-const authAppId = process.env.AUTH_APP_ID ?? "local_dev";
-
 /** Dev-only: self-signed or private CA HTTPS (Alfadocs + Supabase HTTP calls from this server). */
 function createTlsInsecureFetch() {
   const agent = new Agent({ connect: { rejectUnauthorized: false } });
@@ -68,7 +66,9 @@ const auth = createAlfadocsAuth({
   storage: createSupabaseStorage({
     supabaseUrl: authSupabaseUrl,
     serviceRoleKey: authSupabaseKey,
-    appId: authAppId,
+    ...(process.env.AUTH_APP_ID?.trim()
+      ? { appId: process.env.AUTH_APP_ID.trim() }
+      : { oauthClientId: process.env.ALFADOCS_CLIENT_ID }),
     ...(devFetch ? { fetch: devFetch } : {}),
   }),
 });

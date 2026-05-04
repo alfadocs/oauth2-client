@@ -4,11 +4,11 @@ import type { AuthStorage, StoredSession, StoredUser } from "../core/storage.js"
 const USERS_TABLE = "alfa_users";
 const SESSIONS_TABLE = "alfa_sessions";
 
-/** Isolates rows per app when many tenants share one auth Supabase project. */
-function validateAppId(value: string): void {
+/** Validates `app_id` column values (tenant scope string). */
+function validateTenantScope(value: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(value)) {
     throw new Error(
-      `[AlfadocsAuth] Invalid appId (use 1–128 chars: letters, digits, _, ., :, -): ${value}`,
+      `[AlfadocsAuth] Invalid tenant scope (use 1–128 chars: letters, digits, _, ., :, -): ${value}`,
     );
   }
 }
@@ -17,16 +17,34 @@ function appIdEq(appId: string): string {
   return `app_id=eq.${encodeURIComponent(appId)}`;
 }
 
+/** `app_id` for rows: explicit `appId`, else Alfadocs OAuth `client_id` when `oauthClientId` is set. */
+function resolveTenantScope(config: SupabaseStorageConfig): string {
+  const explicit = config.appId?.trim();
+  const fromOAuth = config.oauthClientId?.trim();
+  const chosen = explicit || fromOAuth;
+  if (!chosen) {
+    throw new Error(
+      "[AlfadocsAuth] Set `appId` (e.g. AUTH_APP_ID) and/or `oauthClientId` (Alfadocs OAuth client_id) for multi-tenant `app_id` scope.",
+    );
+  }
+  validateTenantScope(chosen);
+  return chosen;
+}
+
 export interface SupabaseStorageConfig {
   /** Project URL, e.g. from env `AUTH_SUPABASE_URL` when auth lives in a dedicated Supabase project. */
   supabaseUrl: string;
   /** Service role JWT (server-side only), e.g. from env `AUTH_SUPABASE_KEY`. */
   serviceRoleKey: string;
   /**
-   * Tenant / app scope for shared auth storage (matches column `app_id`).
-   * Use a stable id per Lovable project or deployment (e.g. from env `AUTH_APP_ID`).
+   * Tenant scope for shared auth storage (matches column `app_id`). Optional if **`oauthClientId`** is set.
+   * Prefer a dedicated value (e.g. `AUTH_APP_ID`) when many apps share one OAuth client.
    */
-  appId: string;
+  appId?: string;
+  /**
+   * Alfadocs OAuth **`client_id`**. Used as `app_id` when **`appId`** is omitted — one row namespace per registered OAuth app.
+   */
+  oauthClientId?: string;
   schema?: string;
   /** HTTP client for Supabase REST. Defaults to `globalThis.fetch`. */
   fetch?: typeof globalThis.fetch;
@@ -83,8 +101,7 @@ export function createSupabaseStorage(config: SupabaseStorageConfig): AuthStorag
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(schema)) {
     throw new Error(`[AlfadocsAuth] Invalid schema identifier: ${schema}`);
   }
-  validateAppId(config.appId);
-  const appId = config.appId;
+  const appId = resolveTenantScope(config);
   const baseUrl = config.supabaseUrl.replace(/\/$/, "");
   const headers = buildHeaders(config.serviceRoleKey, schema);
   const httpFetch: typeof globalThis.fetch =

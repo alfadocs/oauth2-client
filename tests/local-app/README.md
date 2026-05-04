@@ -41,7 +41,7 @@ export ALFADOCS_BASE_URL="https://app.alfadocs.com"
 # Auth storage Supabase (recommended names — distinct from a “main” app Supabase):
 export AUTH_SUPABASE_URL="https://<project-ref>.supabase.co"
 export AUTH_SUPABASE_KEY="..."
-# Stable id for this app in the shared auth DB (defaults to local_dev if omitted):
+# Optional: override tenant scope for `app_id` (defaults to Alfadocs OAuth client id in local-app):
 export AUTH_APP_ID="my-lovable-project-slug"
 # Or legacy: SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
 ```

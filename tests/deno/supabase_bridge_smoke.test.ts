@@ -26,7 +26,7 @@ Deno.test("createSupabaseStorage getUser uses PostgREST only (no /rpc/)", async 
     const storage = createSupabaseStorage({
       supabaseUrl: "https://example.supabase.co",
       serviceRoleKey: "test-key",
-      appId: "smoke-test-app",
+      oauthClientId: "smoke-oauth-client",
     });
     const user = await storage.getUser("u1");
     assert(user !== null, "expected user");
@@ -34,7 +34,7 @@ Deno.test("createSupabaseStorage getUser uses PostgREST only (no /rpc/)", async 
     assert(calls.length === 1, "single fetch");
     assert(calls[0].includes("/rest/v1/alfa_users"), "users path");
     assert(!calls[0].includes("/rpc/"), "no RPC");
-    assert(calls[0].includes("app_id=eq.smoke-test-app"), "app_id filter");
+    assert(calls[0].includes("app_id=eq.smoke-oauth-client"), "app_id from oauthClientId");
   } finally {
     globalThis.fetch = originalFetch;
   }
