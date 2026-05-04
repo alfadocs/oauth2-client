@@ -23,8 +23,7 @@ flowchart TB
 
   subgraph bridge["Example: Supabase bridge"]
     SB["createSupabaseStorage(...)"]
-    SB --> REST["PostgREST /rest/v1/users, sessions"]
-    SB --> PG["databaseUrl: migrations + NOTIFY pgrst"]
+    SB --> REST["PostgREST /rest/v1/alfa_users, alfa_sessions"]
     SB -.->|implements| I
   end
 
@@ -33,7 +32,7 @@ flowchart TB
   OAuth --> AD["Alfadocs: /oauth2/*, /api/v1/me"]
 ```
 
-The **core** owns the OAuth flow and cookies. **`AuthStorage`** is the persistence seam; **`createSupabaseStorage`** is one implementation (REST + optional Postgres migrations).
+The **core** owns the OAuth flow and cookies. **`AuthStorage`** is the persistence seam; **`createSupabaseStorage`** is one implementation (PostgREST only: `fetch`, no Postgres driver).
 
 **Login flow:** browser → `handleLogin` (redirect) → Alfadocs → `handleCallback` (code exchange + profile) → storage upsert user + session → `Set-Cookie` → later `handleSession` uses cookie → `getSession` / `getUser`.
 
@@ -42,6 +41,18 @@ The **core** owns the OAuth flow and cookies. **`AuthStorage`** is the persisten
 ```bash
 npm install @alfadocs/auth
 ```
+
+## Supabase tables (one-time)
+
+Tables **`alfa_users`** and **`alfa_sessions`** are **multi-tenant**: every row includes **`app_id`**. Primary keys are **`(app_id, id)`** and **`(app_id, cookie_value)`**. The bridge sets `app_id` from **`appId`** or, if omitted, from **`oauthClientId`** (Alfadocs OAuth **`client_id`**) on every PostgREST request.
+
+**Breaking:** if you previously used the old **`alfadocs_auth_ensure_schema`** RPC, new migrations **`DROP FUNCTION IF EXISTS`** it. If you had tables **without** `app_id`, drop `alfa_sessions` then `alfa_users` before applying.
+
+**Apply DDL:** use [`supabase/migrations/`](supabase/migrations/) — run **`supabase db push`** with the [Supabase CLI](https://supabase.com/docs/guides/cli), or paste the latest migration SQL into the [Supabase SQL editor](https://supabase.com/dashboard). That creates **`alfa_*`** in `public` and **`NOTIFY pgrst, 'reload schema'`** so PostgREST reloads.
+
+**Shared auth project (e.g. Lovable / Edge):** one Supabase project can back many apps. Use **`AUTH_SUPABASE_URL`** and **`AUTH_SUPABASE_KEY`**. For the `app_id` row scope, pass **`appId`** (e.g. **`AUTH_APP_ID`**) and/or **`oauthClientId`** (your Alfadocs OAuth **`client_id`**). If **`appId`** is omitted, **`oauthClientId`** is used — fine when one OAuth client maps to one tenant. Prefer an explicit **`appId`** when several apps share the same `client_id` or you want a non-public identifier. **`createSupabaseStorage({ supabaseUrl, serviceRoleKey, appId?, oauthClientId? })`**. Treat the service role as a root secret.
+
+**RLS:** the shipped migration enables **row level security** on **`alfa_*`** with **no policies** for normal roles, so **`anon` / `authenticated`** PostgREST traffic cannot read or write those rows (hardening if a key is misused). The **service role** used by this bridge **bypasses RLS** in Supabase, so your server-side `fetch` calls keep working. Add policies only if you intentionally expose these tables to user JWTs.
 
 ## Usage
 
@@ -55,9 +66,10 @@ const auth = createAlfadocsAuth({
   redirectUri: "...",
   appOrigin: "https://myapp.example",
   storage: createSupabaseStorage({
-    supabaseUrl: process.env.SUPABASE_URL!,
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    databaseUrl: process.env.SUPABASE_DB_URL!,
+    supabaseUrl: process.env.AUTH_SUPABASE_URL!,
+    serviceRoleKey: process.env.AUTH_SUPABASE_KEY!,
+    oauthClientId: process.env.ALFADOCS_CLIENT_ID!,
+    // Optional override: appId: process.env.AUTH_APP_ID,
   }),
 });
 ```
@@ -76,18 +88,7 @@ The core is now decoupled from infrastructure via split interfaces:
 - `SessionStore` (`createSession`, `getSession`, `deleteSession`)
 - `AuthStorage` (`UserStore & SessionStore`)
 
-## Supabase optimistic migrations
-
-The Supabase bridge uses an optimistic strategy:
-1. Assume `users` and `sessions` tables already exist.
-2. If an operation fails with a missing-table error, run bridge migrations automatically.
-3. Retry the operation after migration (with short backoff for schema cache refresh).
-
-Migration SQL files:
-- `src/supabase-bridge/migrations/001_create_users.sql`
-- `src/supabase-bridge/migrations/002_create_sessions.sql`
-
-Note: automatic migration requires `databaseUrl` credentials that can execute SQL in your Supabase project.
+The bridge only speaks **PostgREST** (`fetch`), so it runs on **Supabase Edge**, Deno Deploy, Bun, Node, and Cloudflare Workers without a `postgres` driver.
 
 ## Testing
 
@@ -97,7 +98,15 @@ Note: automatic migration requires `databaseUrl` credentials that can execute SQ
 npm test
 ```
 
-Tests live under `tests/core/` and `tests/supabase-bridge/`.
+**Deno smoke test** (loads the Supabase bridge under Deno with stubbed `fetch`):
+
+```bash
+npm run test:deno
+```
+
+This runs `deno test tests/deno/` with repo [`deno.json`](deno.json) enabling sloppy imports so Node-style `.js` specifiers in `src/` resolve to `.ts` sources under Deno.
+
+Tests live under `tests/core/`, `tests/supabase-bridge/`, and `tests/deno/`.
 
 **Local end-to-end smoke test** against a real Alfadocs client and Supabase project (no Edge Function required): build, configure env, run the sample server.
 
